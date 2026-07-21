@@ -23,5 +23,5 @@ class LinearRegression(Module):
             raise RuntimeError("backward called before forward pass")
             
         m = self.x.shape[0]
-        self.w.grad = (1 / m) * self.x.T @ grad_output
-        self.b.grad = (1 / m) * np.sum(grad_output, axis=0, keepdims=True)
+        self.w.grad += (1 / m) * self.x.T @ grad_output
+        self.b.grad += (1 / m) * np.sum(grad_output, axis=0, keepdims=True)
