@@ -1,11 +1,11 @@
-# 🧠 Deep Learning from Scratch — Hành Trình Tự Học
+# Deep Learning from Scratch — Hành Trình Tự Học
 
 > **Repo này tổng hợp quá trình tự học Deep Learning của tôi.**  
 > Tôi xây dựng mọi thứ **from scratch** — từ Machine Learning cơ bản đến Deep Learning — cùng với tài liệu tự viết trình bày kiến thức một cách cô đọng nhất.
 
 ---
 
-## 🎯 Mục tiêu
+## Mục tiêu
 
 Dự án này không nhằm tái tạo một thư viện production. Mục tiêu cốt lõi là **hiểu sâu từng khái niệm** bằng cách tự cài đặt lại từ đầu:
 
@@ -15,7 +15,7 @@ Dự án này không nhằm tái tạo một thư viện production. Mục tiêu
 
 ---
 
-## 🗂️ Cấu trúc dự án
+## Cấu trúc dự án
 
 ```
 MachineLearning/
@@ -37,7 +37,7 @@ MachineLearning/
 
 ---
 
-## 🔩 Kiến trúc thư viện `basicml`
+## Kiến trúc thư viện `basicml`
 
 Thư viện được thiết kế theo mô hình **PyTorch-inspired**, tách biệt rõ ràng các thành phần:
 
@@ -70,7 +70,7 @@ Triển khai **Linear Regression** hoàn chỉnh với:
 
 ---
 
-## ⚡ Ví dụ sử dụng
+## Ví dụ sử dụng
 
 ```python
 import numpy as np
@@ -107,20 +107,20 @@ for epoch in range(100):
 
 ---
 
-## 🗺️ Lộ trình học tập
+## Lộ trình học tập
 
 | Giai đoạn | Nội dung | Trạng thái |
 |-----------|----------|------------|
-| **Machine Learning** | Linear Regression, Gradient Descent | 🚧 Đang xây dựng |
-| **Machine Learning** | Logistic Regression, Classification | ⏳ Sắp tới |
-| **Machine Learning** | Decision Tree, SVM, KNN | ⏳ Sắp tới |
-| **Deep Learning** | MLP, Backpropagation tự động | ⏳ Sắp tới |
-| **Deep Learning** | CNN, RNN, Attention | ⏳ Sắp tới |
-| **Deep Learning** | Transformer from scratch | ⏳ Sắp tới |
+| **Machine Learning** | Linear Regression, Gradient Descent | Đang xây dựng |
+| **Machine Learning** | Logistic Regression, Classification | Sắp tới |
+| **Machine Learning** | Decision Tree, SVM, KNN | Sắp tới |
+| **Deep Learning** | MLP, Backpropagation tự động | Sắp tới |
+| **Deep Learning** | CNN, RNN, Attention | Sắp tới |
+| **Deep Learning** | Transformer from scratch | Sắp tới |
 
 ---
 
-## 🛠️ Yêu cầu
+## Yêu cầu
 
 ```
 Python >= 3.10
@@ -134,7 +134,7 @@ pip install numpy
 
 ---
 
-## 📄 Ghi chú
+## Ghi chú
 
 - Tất cả thuật toán được **cài đặt thuần NumPy** — không dùng PyTorch hay framework tương đương — trừ khi có ghi chú riêng.
 - Mỗi module đi kèm **tài liệu tự viết** giải thích toán học và ý tưởng đằng sau thuật toán.
