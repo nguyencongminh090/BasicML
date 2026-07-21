@@ -113,7 +113,6 @@ for epoch in range(100):
 |-----------|----------|------------|
 | **Machine Learning** | Linear Regression, Gradient Descent | Đang xây dựng |
 | **Machine Learning** | Logistic Regression, Classification | Sắp tới |
-| **Machine Learning** | Decision Tree, SVM, KNN | Sắp tới |
 | **Deep Learning** | MLP, Backpropagation tự động | Sắp tới |
 | **Deep Learning** | CNN, RNN, Attention | Sắp tới |
 | **Deep Learning** | Transformer from scratch | Sắp tới |
@@ -123,7 +122,7 @@ for epoch in range(100):
 ## Yêu cầu
 
 ```
-Python >= 3.10
+Python >= 3.13
 numpy
 ```
 
