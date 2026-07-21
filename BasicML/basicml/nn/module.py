@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import Dict
+from basicml.tensor import Tensor
 from numpy.typing import ArrayLike
 import numpy as np
+
 
 class Module(ABC):
     @abstractmethod
@@ -12,9 +13,5 @@ class Module(ABC):
         return self.forward(X)
 
     @abstractmethod
-    def parameters(self) -> Dict[str, np.ndarray]:
-        pass
-
-    @abstractmethod
-    def gradients(self) -> Dict[str, np.ndarray]:
+    def parameters(self) -> list[Tensor]:
         pass

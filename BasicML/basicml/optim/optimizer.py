@@ -1,9 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import Dict
-import numpy as np
+from basicml.tensor import Tensor
 
 class Optimizer(ABC):
-    def __init__(self, parameters: Dict[str, np.ndarray], lr: float):
+    def __init__(self, parameters: list[Tensor], lr: float):
         self.parameters = parameters
         self.lr         = lr
 
