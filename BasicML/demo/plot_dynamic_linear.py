@@ -1,3 +1,5 @@
+# AI generated
+
 import os
 import sys
 import matplotlib.pyplot as plt
@@ -25,7 +27,7 @@ def main():
     x_std  = X.std()
     X      = (X - x_mean) / x_std
 
-    epochs = 150
+    epochs = 1000
     model  = LinearRegression(features=1)
 
     model.w.data = np.array([[-1.0]])
@@ -37,8 +39,11 @@ def main():
     max_mom, base_mom, final_mom = 0.95, 0.70, 0.875
     pct_start                    = 0.3
 
-    optim                = Momentum(model.parameters(), lr=base_lr, momentum=max_mom)
-    early_stop_threshold = 1e-4
+    optim      = Momentum(model.parameters(), lr=base_lr, momentum=max_mom)
+    patience   = 15
+    min_delta  = 1e-4
+    best_loss  = float('inf')
+    no_improve = 0
 
     w_hist    = []
     b_hist    = []
@@ -65,9 +70,15 @@ def main():
         l      = loss(y_pred, Y)
         loss_hist.append(l)
 
-        if l < early_stop_threshold:
-            print(f"Early stopping at epoch {epoch + 1}: Cost ({l:.6f}) < Threshold ({early_stop_threshold})")
-            break
+        if pct >= pct_start:
+            if l < best_loss - min_delta:
+                best_loss  = l
+                no_improve = 0
+            else:
+                no_improve += 1
+                if no_improve >= patience:
+                    print(f"Adaptive early stopping at epoch {epoch + 1}: Cost did not improve for {patience} epochs (Best: {best_loss:.6f})")
+                    break
 
         grad = loss.backward()
         model.backward(grad)
@@ -79,6 +90,10 @@ def main():
     loss_hist = np.array(loss_hist)
     print(f"Training complete. Final Cost: {loss_hist[-1]:.4f}")
 
+    w_opt    = float(np.cov(X.squeeze(), Y.squeeze())[0, 1] / np.var(X))
+    b_opt    = float(Y.mean() - w_opt * X.mean())
+    min_cost = float(np.mean((w_opt * X + b_opt - Y) ** 2))
+
     fig = plt.figure(figsize=(18, 10))
     if fig.canvas.manager is not None:
         fig.canvas.manager.set_window_title('BasicML - Linear Regression Dynamic Training')
@@ -89,14 +104,14 @@ def main():
     ax1.set_xlim(X.min() - 1, X.max() + 1)
     ax1.set_ylim(Y.min() - 2, Y.max() + 2)
     ax1.set_title("1. Linear Regression Fit")
-    ax1.set_xlabel("X")
+    ax1.set_xlabel("X (Normalized)")
     ax1.set_ylabel("Y")
     ax1.legend()
     ax1.grid(True, linestyle='--', alpha=0.6)
 
     ax2        = fig.add_subplot(232)
     loss_line, = ax2.plot([], [], color='green', linewidth=2, label='MSE Loss')
-    ax2.set_xlim(0, epochs)
+    ax2.set_xlim(0, len(loss_hist))
     ax2.set_ylim(0, max(loss_hist) * 1.1)
     ax2.set_title("2. Learning Curve")
     ax2.set_xlabel("Epochs")
@@ -114,9 +129,15 @@ def main():
     ax5.legend()
     ax5.grid(True, linestyle='--', alpha=0.6)
 
-    ax3    = fig.add_subplot(234)
-    w_vals = np.linspace(-2.0, 4.0, 50)
-    b_vals = np.linspace(-4.0, 4.0, 50)
+    ax3      = fig.add_subplot(234)
+    w_margin = max(abs(w_hist.max() - w_hist.min()), 2.0) * 0.4
+    b_margin = max(abs(b_hist.max() - b_hist.min()), 2.0) * 0.4
+
+    w_min, w_max = min(w_hist.min(), w_opt) - w_margin, max(w_hist.max(), w_opt) + w_margin
+    b_min, b_max = min(b_hist.min(), b_opt) - b_margin, max(b_hist.max(), b_opt) + b_margin
+
+    w_vals = np.linspace(w_min, w_max, 50)
+    b_vals = np.linspace(b_min, b_max, 50)
     W_grid, B_grid = np.meshgrid(w_vals, b_vals)
     Z_grid = np.zeros_like(W_grid)
 
@@ -125,14 +146,14 @@ def main():
             pred         = W_grid[j, i] * X + B_grid[j, i]
             Z_grid[j, i] = np.mean((pred - Y) ** 2)
 
-    contour = ax3.contour(W_grid, B_grid, Z_grid, levels=np.logspace(-1, 3, 20), cmap='viridis', alpha=0.8)
+    contour = ax3.contour(W_grid, B_grid, Z_grid, levels=np.linspace(min_cost, Z_grid.max(), 20), cmap='viridis', alpha=0.8)
     ax3.clabel(contour, inline=True, fontsize=8)
-    ax3.plot([2.0], [0.0], marker='*', color='red', markersize=12, label='Global Minimum')
+    ax3.plot([w_opt], [b_opt], marker='*', color='red', markersize=12, label=f'Global Min ({w_opt:.2f}, {b_opt:.2f})')
 
     path_line, = ax3.plot([], [], color='black', marker='o', markersize=3, linewidth=1, alpha=0.7, label='Momentum Path')
 
-    ax3.set_xlim(-2.0, 4.0)
-    ax3.set_ylim(-4.0, 4.0)
+    ax3.set_xlim(w_min, w_max)
+    ax3.set_ylim(b_min, b_max)
     ax3.set_title("3. 2D Gradient Path on Cost Surface")
     ax3.set_xlabel("Weight (w)")
     ax3.set_ylabel("Bias (b)")
@@ -141,7 +162,7 @@ def main():
     ax4 = fig.add_subplot(235, projection='3d')
     ax4.plot_surface(W_grid, B_grid, Z_grid, cmap='viridis', alpha=0.6, edgecolor='none')
     path_line_3d, = ax4.plot([], [], [], color='black', marker='o', markersize=3, linewidth=2, label='Momentum Path')
-    ax4.plot([2.0], [0.0], [0.0], marker='*', color='red', markersize=12, label='Global Min')
+    ax4.plot([w_opt], [b_opt], [min_cost], marker='*', color='red', markersize=12, label='Global Min')
     ax4.set_title("4. 3D Gradient Path")
     ax4.set_xlabel("Weight (w)")
     ax4.set_ylabel("Bias (b)")

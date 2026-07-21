@@ -1,3 +1,5 @@
+# AI generated
+
 import os
 import sys
 import numpy as np
@@ -36,7 +38,7 @@ def main():
     scaler   = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
-    epochs = 150
+    epochs = 1000
     model  = LinearRegression(features=1)
     loss   = MSELoss()
 
@@ -44,8 +46,11 @@ def main():
     max_mom, base_mom, final_mom = 0.95, 0.70, 0.875
     pct_start                    = 0.3
 
-    optim                = Momentum(model.parameters(), lr=base_lr, momentum=max_mom)
-    early_stop_threshold = 1e-11
+    optim      = Momentum(model.parameters(), lr=base_lr, momentum=max_mom)
+    patience   = 15
+    min_delta  = 1e-4
+    best_loss  = float('inf')
+    no_improve = 0
 
     for epoch in range(epochs):
         pct = epoch / epochs
@@ -64,9 +69,15 @@ def main():
         l      = loss(y_pred, Y)
         print(f'EPOCH: {epoch} | COST: {l:.6f}')
 
-        if l < early_stop_threshold:
-            print(f'Early stopping at epoch {epoch + 1}: Cost ({l:.6f}) < Threshold ({early_stop_threshold})')
-            break
+        if pct >= pct_start:
+            if l < best_loss - min_delta:
+                best_loss  = l
+                no_improve = 0
+            else:
+                no_improve += 1
+                if no_improve >= patience:
+                    print(f'Adaptive early stopping at epoch {epoch + 1}: Cost did not improve for {patience} epochs (Best: {best_loss:.6f})')
+                    break
 
         grad = loss.backward()
         model.backward(grad)

@@ -23,7 +23,7 @@ def main():
 
     model = LinearRegression(features=1)
     loss  = MSELoss()
-    optim = Momentum(model.parameters(), lr=0.05)
+    optim = Momentum(model.parameters(), lr=0.01, momentum=0.7)
 
     for epoch in range(epochs):
         y_pred = model(X)
