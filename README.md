@@ -23,14 +23,17 @@ MachineLearning/
     ├── basicml/               # Thư viện tự xây dựng
     │   ├── tensor.py          # Tensor wrapper (NumPy-backed)
     │   ├── nn/
-    │   │   ├── module.py      # Abstract base class cho mọi model
-    │   │   ├── linear.py      # Linear Regression (forward + backward)
-    │   │   └── loss.py        # Hàm mất mát (MSELoss, ...)
+    │   │   ├── module.py      # Abstract base class
+    │   │   ├── linear.py      # Linear Layer (Xavier & He Init)
+    │   │   ├── activation.py  # Sigmoid, ReLU
+    │   │   ├── models.py      # LogisticRegressionModel
+    │   │   └── loss.py        # MSELoss, BinaryCrossEntropy
     │   └── optim/
     │       ├── optimizer.py   # Abstract base class cho optimizer
     │       └── sgd.py         # Stochastic Gradient Descent
     ├── examples/
-    │   └── train_linear.py    # Ví dụ huấn luyện mô hình Linear
+    │   ├── train_linear.py    # Huấn luyện mô hình Linear
+    │   └── train_logistic.py  # Huấn luyện Logistic Regression
     ├── tepmlate_1(basic).py   # Template PyTorch-style (cơ bản)
     └── template_2_pytorch.py  # Template PyTorch-style (nâng cao)
 ```
@@ -53,15 +56,25 @@ Abstract base class cho mọi model. Mọi model phải implement:
 - `parameters()` — trả về danh sách `Tensor` cần tối ưu
 - `backward(grad_output)` — tính gradient thủ công
 
-### `nn.LinearRegression`
-Triển khai **Linear Regression** hoàn chỉnh với:
-- Khởi tạo trọng số `w` và bias `b` bằng 0
-- `forward`: $\hat{y} = X \cdot w + b$
+### `nn.Linear`
+Triển khai **Linear Layer** hoàn chỉnh với:
+- Khởi tạo trọng số `w` (hỗ trợ `xavier` hoặc `he` init) và bias `b` = 0
+- `forward`: $y = X \cdot w + b$
 - `backward`: Tính gradient theo quy tắc chain rule
 
-### `nn.Loss` & `MSELoss`
+### `nn.Activation`
+Các hàm kích hoạt phi tuyến (kế thừa từ `Module`):
+- **Sigmoid**: Hỗ trợ phân loại nhị phân (Binary Classification)
+- **ReLU**: Hàm phi tuyến phổ biến $max(0, x)$
+
+### `nn.models`
+Các mô hình ghép nối sẵn (Composable Models):
+- **LogisticRegressionModel**: Bao gồm `Linear` layer kết hợp cùng `Sigmoid` activation.
+
+### `nn.Loss`
+Hàm mất mát chịu trách nhiệm tính toán sai số và bắt đầu quá trình backward (bao gồm factor $1/m$):
 - **MSELoss**: $\mathcal{L} = \frac{1}{2m}\sum(\hat{y} - y)^2$
-- `backward()`: Trả về gradient $\frac{\partial \mathcal{L}}{\partial \hat{y}} = \hat{y} - y$
+- **BinaryCrossEntropy**: Loss cho bài toán phân loại nhị phân. Dùng `np.clip` chống `NaN`.
 
 ### `optim.SGD`
 **Stochastic Gradient Descent** chuẩn:
@@ -74,7 +87,7 @@ Triển khai **Linear Regression** hoàn chỉnh với:
 
 ```python
 import numpy as np
-from basicml.nn.linear import LinearRegression
+from basicml.nn.linear import Linear
 from basicml.nn.loss   import MSELoss
 from basicml.optim.sgd import SGD
 
@@ -83,7 +96,7 @@ X = np.random.randn(100, 3)
 y = np.random.randn(100, 1)
 
 # Khởi tạo model, loss, optimizer
-model     = LinearRegression(features=3)
+model     = Linear(features=3)
 criterion = MSELoss()
 optimizer = SGD(model.parameters(), lr=0.01)
 
@@ -111,8 +124,8 @@ for epoch in range(100):
 
 | Giai đoạn | Nội dung | Trạng thái |
 |-----------|----------|------------|
-| **Machine Learning** | Linear Regression, Gradient Descent | Đang xây dựng |
-| **Machine Learning** | Logistic Regression, Classification | Sắp tới |
+| **Machine Learning** | Linear Regression, Gradient Descent | Hoàn thành |
+| **Machine Learning** | Logistic Regression, Classification | Hoàn thành |
 | **Deep Learning** | MLP, Backpropagation tự động | Sắp tới |
 | **Deep Learning** | CNN, RNN, Attention | Sắp tới |
 | **Deep Learning** | Transformer from scratch | Sắp tới |
