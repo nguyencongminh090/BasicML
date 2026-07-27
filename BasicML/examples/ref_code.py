@@ -8,7 +8,7 @@ import pandas as pd
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 np.set_printoptions(suppress=True, precision=4)
 
-from basicml.nn.linear import LinearRegression
+from basicml.nn.linear import Linear
 from basicml.nn.loss import MSELoss
 from basicml.optim.momentum import Momentum
 
@@ -39,7 +39,7 @@ def main():
     X_scaled = scaler.fit_transform(X)
 
     epochs = 1000
-    model  = LinearRegression(features=1)
+    model  = Linear(features=1)
     loss   = MSELoss()
 
     base_lr, max_lr, final_lr    = 0.005, 0.08, 0.001

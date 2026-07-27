@@ -10,7 +10,7 @@ from matplotlib.animation import FuncAnimation
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 np.set_printoptions(suppress=True, precision=4)
 
-from basicml.nn.linear import LinearRegression
+from basicml.nn.linear import Linear
 from basicml.nn.loss import MSELoss
 from basicml.optim.momentum import Momentum
 
@@ -23,12 +23,12 @@ def main():
     X = data[['X']].values
     Y = data[['Y']].values
 
-    x_mean = X.mean()
-    x_std  = X.std()
-    X      = (X - x_mean) / x_std
+    # x_mean = X.mean()
+    # x_std  = X.std()
+    # X      = (X - x_mean) / x_std
 
     epochs = 1000
-    model  = LinearRegression(features=1)
+    model  = Linear(features=1)
 
     model.w.data = np.array([[-1.0]])
     model.b.data = np.array([[-2.0]])
