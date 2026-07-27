@@ -73,8 +73,16 @@ Các mô hình ghép nối sẵn (Composable Models):
 
 ### `nn.Loss`
 Hàm mất mát chịu trách nhiệm tính toán sai số và bắt đầu quá trình backward (bao gồm factor $1/m$):
-- **MSELoss**: $\mathcal{L} = \frac{1}{2m}\sum(\hat{y} - y)^2$
-- **BinaryCrossEntropy**: Loss cho bài toán phân loại nhị phân. Dùng `np.clip` chống `NaN`.
+
+**MSELoss**:
+
+$$
+\mathcal{L} = \frac{1}{2m}\sum(\hat{y} - y)^2
+$$
+
+**BinaryCrossEntropy**:
+
+Loss cho bài toán phân loại nhị phân. Dùng `np.clip` chống `NaN`.
 
 ### `optim.SGD`
 **Stochastic Gradient Descent** chuẩn:
