@@ -64,6 +64,7 @@ print(f'w = {model.parameters()[0].data.item():.4f}, '
       f'b = {model.parameters()[1].data.item():.4f} |'
       f'f(x) = 1 / (1 + e^-({model.parameters()[0].data.item():.4f}x +'
       f'({model.parameters()[1].data.item():.4f})))')
+print(f'Loss: {l}')
 
 x_line = np.linspace(0, 10, 100).reshape(-1, 1)
 y_line = model(x_line)
