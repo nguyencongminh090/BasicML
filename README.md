@@ -1,17 +1,15 @@
-# Deep Learning from Scratch — Hành Trình Tự Học
+# Deep Learning from Scratch
 
-> **Repo này tổng hợp quá trình tự học Deep Learning của tôi.**  
-> Tôi xây dựng mọi thứ **from scratch** — từ Machine Learning cơ bản đến Deep Learning — cùng với tài liệu tự viết trình bày kiến thức một cách cô đọng nhất.
+> Cài lại các thuật toán Machine Learning và Deep Learning **from scratch**, kèm ghi chú giải thích toán học đằng sau từng thuật toán.
 
 ---
 
 ## Mục tiêu
 
-Dự án này không nhằm tái tạo một thư viện production. Mục tiêu cốt lõi là **hiểu sâu từng khái niệm** bằng cách tự cài đặt lại từ đầu:
+Không nhằm xây dựng một thư viện production — mọi thuật toán đều được cài lại từ đầu bằng NumPy thuần, kể cả backward pass, để hiểu rõ:
 
-- Nắm vững toán học đằng sau từng thuật toán
-- Hiểu luồng forward pass → loss → backward pass → optimizer step
-- Xây dựng nền tảng vững chắc trước khi dùng PyTorch / JAX / TensorFlow
+- Toán học đằng sau từng thuật toán
+- Luồng forward pass → loss → backward pass → optimizer step
 
 ---
 
@@ -30,9 +28,10 @@ MachineLearning/
     │   │   └── loss.py        # MSELoss, BinaryCrossEntropy
     │   └── optim/
     │       ├── optimizer.py   # Abstract base class cho optimizer
-    │       └── sgd.py         # Stochastic Gradient Descent
+    │       ├── sgd.py         # Stochastic Gradient Descent
+    │       └── momentum.py    # SGD với Momentum
     ├── examples/
-    │   ├── train_linear.py    # Huấn luyện mô hình Linear
+    │   ├── train_linear.py    # Huấn luyện model Linear
     │   └── train_logistic.py  # Huấn luyện Logistic Regression
     ├── tepmlate_1(basic).py   # Template PyTorch-style (cơ bản)
     └── template_2_pytorch.py  # Template PyTorch-style (nâng cao)
@@ -63,16 +62,16 @@ Triển khai **Linear Layer** hoàn chỉnh với:
 - `backward`: Tính gradient theo quy tắc chain rule
 
 ### `nn.Activation`
-Các hàm kích hoạt phi tuyến (kế thừa từ `Module`):
-- **Sigmoid**: Hỗ trợ phân loại nhị phân (Binary Classification)
-- **ReLU**: Hàm phi tuyến phổ biến $max(0, x)$
+Các activation function phi tuyến (kế thừa từ `Module`):
+- **Sigmoid**: dùng cho binary classification
+- **ReLU**: activation function phổ biến, $max(0, x)$
 
 ### `nn.models`
-Các mô hình ghép nối sẵn (Composable Models):
+Composable models ghép từ các layer có sẵn:
 - **LogisticRegressionModel**: Bao gồm `Linear` layer kết hợp cùng `Sigmoid` activation.
 
 ### `nn.Loss`
-Hàm mất mát chịu trách nhiệm tính toán sai số và bắt đầu quá trình backward (bao gồm factor $1/m$):
+Loss function chịu trách nhiệm tính toán sai số và bắt đầu quá trình backward (bao gồm factor $1/m$):
 
 **MSELoss**:
 
@@ -82,12 +81,12 @@ $$
 
 **BinaryCrossEntropy**:
 
-Loss cho bài toán phân loại nhị phân. Dùng `np.clip` chống `NaN`.
+Loss function cho binary classification. Dùng `np.clip` chống `NaN`.
 
-### `optim.SGD`
-**Stochastic Gradient Descent** chuẩn:
-- `step()`: Cập nhật tham số theo $\theta \leftarrow \theta - \alpha \cdot \nabla\theta$
-- `zero_grad()`: Đặt lại gradient về 0 trước mỗi iteration
+### `optim`
+**SGD**: Gradient descent chuẩn — `step()` cập nhật tham số theo $\theta \leftarrow \theta - \alpha \cdot \nabla\theta$, `zero_grad()` đặt lại gradient về 0 trước mỗi iteration.
+
+**Momentum**: SGD kèm vận tốc tích lũy (`velocities`, hệ số `momentum` mặc định 0.9) để làm mượt hướng cập nhật qua các bước.
 
 ---
 
@@ -128,7 +127,7 @@ for epoch in range(100):
 
 ---
 
-## Lộ trình học tập
+## TODO list
 
 | Giai đoạn | Nội dung | Trạng thái |
 |-----------|----------|------------|
@@ -159,9 +158,3 @@ pip install numpy
 - Tất cả thuật toán được **cài đặt thuần NumPy** — không dùng PyTorch hay framework tương đương — trừ khi có ghi chú riêng.
 - Mỗi module đi kèm **tài liệu tự viết** giải thích toán học và ý tưởng đằng sau thuật toán.
 - Mã nguồn ưu tiên **sự rõ ràng** hơn hiệu năng để dễ hiểu và dễ học.
-
----
-
-<p align="center">
-  <i>Học bằng cách tự xây dựng — Build to understand.</i>
-</p>
