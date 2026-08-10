@@ -7,6 +7,10 @@ __pycache__/
 .agents/
 .gemini/
 
+# AI audit: conversation index is machine/session-local (points at Claude Code's
+# own native session transcripts under ~/.claude/projects/, which aren't portable)
+ai-audit/convo/
+
 # Virtual environments
 venv/
 env/
