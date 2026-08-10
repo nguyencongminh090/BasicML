@@ -29,4 +29,5 @@ class BinaryCrossEntropy(Loss):
             np.sum((self.y_true * np.log(self.y_pred) + (1 - self.y_true) * np.log(1 - self.y_pred)))
 
     def backward(self) -> np.ndarray:
-        return 1/(self.y_pred.shape[0]) * (self.y_pred - self.y_true)
+        return 1/(self.y_pred.shape[0]) * \
+               ((self.y_pred - self.y_true) / (self.y_pred * (1- self.y_pred)))

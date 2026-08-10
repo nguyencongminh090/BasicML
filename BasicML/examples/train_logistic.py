@@ -41,7 +41,7 @@ from basicml.optim.momentum import Momentum
 from basicml.nn.loss        import BinaryCrossEntropy, MSELoss
 
 epochs    = 0
-threshold = 1e-2
+threshold = 1e-3
 
 model = LogisticRegressionModel(1)
 loss  = BinaryCrossEntropy()
