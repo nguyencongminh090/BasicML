@@ -4,4 +4,4 @@ Read this table first — never scan individual `TODO-*.md` files unless you nee
 
 | ID | Status | Priority | Source | Short Description | Instruction | Updated |
 |----|--------|----------|--------|--------------------|-------------|---------|
-| _none_ | | | | | | |
+| TODO-0006 | in-progress | medium | user-report | Demo: vanishing gradient — Sigmoid+Xavier vs ReLU+He deep MLP, per-layer gradient RMS + Π f'(z) animation | [TODO-0006](../instructions/TODO-0006.md) | 2026-09-02 |
