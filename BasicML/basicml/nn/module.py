@@ -9,6 +9,10 @@ class Module(ABC):
     def forward(self, X: ArrayLike) -> np.ndarray:
         pass
 
+    @abstractmethod
+    def backward(self, grad_output: np.ndarray) -> np.ndarray:
+        pass
+
     def __call__(self, X: ArrayLike) -> np.ndarray:
         return self.forward(X)
 
