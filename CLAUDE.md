@@ -53,13 +53,14 @@ Standard training loop shape used throughout examples/demos: `forward → loss(y
 ## Code style
 
 - **English only in code.** Identifiers, comments, docstrings, and developer-facing string literals are English. No Vietnamese in `.py` files.
-- **Comments follow Clean Code.** Comment *why*, not *what* — the code already says what. Put a comment directly above (or on) the line it explains; do not sprinkle comments that restate obvious operations. Prefer a clearer name or a small helper over a comment. Never leave commented-out code.
-- **Every function, method, and class has a docstring, Google style** (as in `basicml/datasets/synthetic.py` and `basicml/visualize/decision_boundary.py`):
+- **The core library modules stay bare — no `#` comments, no docstrings.** Every file directly under `BasicML/basicml/` (`nn/`, `optim/`, `tensor.py`, …) carries *zero* `#` comments and *zero* docstrings on its classes, methods, and functions: the code, type hints, and clear names are the whole story. If a line needs a comment to be understood, rename it or extract a helper. Keep the `raise RuntimeError("backward called before forward pass")` guards — they are behaviour, not documentation.
+- **Docstrings live only in the "library edge" packages** — `basicml/datasets/` and `basicml/visualize/` — where every function, method, and class gets a Google-style docstring (as in `basicml/datasets/synthetic.py` and `basicml/visualize/decision_boundary.py`):
   - First line: what problem the callable solves / what it produces — not a paraphrase of its name.
   - `Args:` — for each parameter: what it means, expected type / array shape, valid options, and what a default implies.
   - `Returns:` — meaning and type / shape.
   - `Raises:` — each exception and the condition that triggers it.
   - Where it aids understanding (this is a teaching repo), state the math the function implements.
+- **`examples/` and `demo/`** may use sparse Clean-Code `why`-comments (never `what`-comments, never commented-out code) and module/function docstrings where they help a reader follow the script.
 - **SOLID:**
   - *Single responsibility* — one function/class does one thing; split when its docstring needs an "and".
   - *Open/closed* — add a new `Module` / `Loss` / `Optimizer` subclass rather than branching inside an existing one.
