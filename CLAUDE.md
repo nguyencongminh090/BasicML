@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-A from-scratch deep learning learning project (`BasicML/`). The goal is understanding, not production use: every algorithm is implemented in pure NumPy, favoring clarity over performance, with no autograd — gradients are computed by hand in each module's `backward()`. Documentation and commit history are in Vietnamese; code and identifiers are in English.
+A from-scratch deep learning learning project (`BasicML/`). The goal is understanding, not production use: every algorithm is implemented in pure NumPy, favoring clarity over performance, with no autograd — gradients are computed by hand in each module's `backward()`. The repo is being internationalized to English: code, identifiers, comments, and docstrings are English-only, and existing Vietnamese comments/docs are being migrated (see `ai-audit` TODO-0007). Historical commit messages and older `BasicML/logs/` entries stay as written.
 
 ## Commands
 
@@ -49,6 +49,23 @@ Standard training loop shape used throughout examples/demos: `forward → loss(y
 - `.claude/skills/` holds project skills for Claude Code (`commit-task`, `git-commit`, `write-logs`, `ai-audit`, `machine-learning`, `documentation-writer`, `find-skills`, `prompt-architect`, `latex-document-skill`); `.claude/commands/` exposes `/make-commit`, `/write-log`, `/todo-add`, and `/fix-log` as shortcuts. `/make-commit` runs `commit-task` (classify → branch-place → delegate to `git-commit`), not `git-commit` directly. **`git-commit`'s trigger description overlaps with `commit-task`'s ("user asks to commit changes") and it has no branch-policy awareness — never invoke `git-commit` directly for any commit intent in this repo, even without the `/make-commit` command; always go through `commit-task` first.** `write-log` indexes the session in `ai-audit/convo/INDEX.md` by default (points at the native session transcript, no rewrite); it only writes a Markdown summary under `BasicML/logs/` (existing logs live there) when explicitly asked for one.
 - `.agents/` (gitignored) is a duplicate copy of the same skills for other agent tools (e.g. Copilot, Antigravity) that read that convention instead — keep the two in sync manually if a skill changes.
 - `ai-audit/` (repo root) is the audit trail and TODO backlog for AI-assisted work on this repo — timestamped fix-log entries, a TODO backlog, per-TODO instruction notes from chat sessions, and a conversation index. See `ai-audit/README.md` for the full schema; the `ai-audit` skill has the operating fast-paths. **Always read a folder's `INDEX.md` before opening individual item files** — the backlog is designed to survive 100+ items without an agent having to scan the whole tree. `ai-audit/convo/` is gitignored: it indexes conversations by pointing at Claude Code's own native session transcripts (ground truth, no rewrite) rather than requiring a regenerated summary.
+
+## Code style
+
+- **English only in code.** Identifiers, comments, docstrings, and developer-facing string literals are English. No Vietnamese in `.py` files.
+- **Comments follow Clean Code.** Comment *why*, not *what* — the code already says what. Put a comment directly above (or on) the line it explains; do not sprinkle comments that restate obvious operations. Prefer a clearer name or a small helper over a comment. Never leave commented-out code.
+- **Every function, method, and class has a docstring, Google style** (as in `basicml/datasets/synthetic.py` and `basicml/visualize/decision_boundary.py`):
+  - First line: what problem the callable solves / what it produces — not a paraphrase of its name.
+  - `Args:` — for each parameter: what it means, expected type / array shape, valid options, and what a default implies.
+  - `Returns:` — meaning and type / shape.
+  - `Raises:` — each exception and the condition that triggers it.
+  - Where it aids understanding (this is a teaching repo), state the math the function implements.
+- **SOLID:**
+  - *Single responsibility* — one function/class does one thing; split when its docstring needs an "and".
+  - *Open/closed* — add a new `Module` / `Loss` / `Optimizer` subclass rather than branching inside an existing one.
+  - *Liskov* — a subclass must honour its base's contract (`forward`/`backward` shapes, `parameters()` semantics).
+  - *Interface segregation* — keep base classes minimal; do not force layers to implement what they do not need.
+  - *Dependency inversion* — depend on the `Module` / `Loss` / `Optimizer` abstractions, not concrete classes (e.g. a training loop takes a `Module`, not a `Linear`).
 
 ## AI audit — mandatory triggers
 
