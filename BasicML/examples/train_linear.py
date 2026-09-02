@@ -1,7 +1,10 @@
 # AI generated (refactored/authored with Claude Code)
-"""Linear regression tren BasicML/data.csv.
+"""Linear regression on BasicML/data.csv.
 
-Chay truc tiep: python BasicML/examples/train_linear.py
+Run directly: python BasicML/examples/train_linear.py
+
+Fits a single :class:`Linear` layer with MSE loss and momentum SGD, then
+prints the learned ``f(x) = w x + b``.
 """
 import os
 import sys
@@ -30,6 +33,14 @@ MOMENTUM   = 0.7
 
 
 def load_dataset(path: str) -> tuple[np.ndarray, np.ndarray]:
+    """Read the regression dataset from a CSV file.
+
+    Args:
+        path: Path to a CSV file with columns ``X`` and ``Y``.
+
+    Returns:
+        Tuple ``(x, y)`` of float64 arrays, each shaped ``(n_samples, 1)``.
+    """
     frame = pd.read_csv(path)
     x     = frame[X_COLUMNS].to_numpy(dtype=np.float64)
     y     = frame[Y_COLUMNS].to_numpy(dtype=np.float64)
@@ -37,6 +48,19 @@ def load_dataset(path: str) -> tuple[np.ndarray, np.ndarray]:
 
 
 def train(x: np.ndarray, y: np.ndarray) -> Linear:
+    """Fit a linear model by minimizing mean squared error.
+
+    Runs ``EPOCHS`` full-batch steps of momentum gradient descent, driving the
+    manual backward chain ``loss.backward() -> model.backward(grad)`` and
+    printing the cost each epoch.
+
+    Args:
+        x: Input features, shape ``(n_samples, n_features)``.
+        y: Targets, shape ``(n_samples, n_outputs)``.
+
+    Returns:
+        The trained :class:`Linear` layer.
+    """
     model     = Linear(in_features=x.shape[1], out_features=y.shape[1])
     criterion = MSELoss()
     optimizer = Momentum(model.parameters(), lr=LEARN_RATE, momentum=MOMENTUM)
@@ -55,6 +79,7 @@ def train(x: np.ndarray, y: np.ndarray) -> Linear:
 
 
 def main() -> None:
+    """Load the dataset, train the model, and print the fitted line."""
     x, y  = load_dataset(DATA_PATH)
     model = train(x, y)
 

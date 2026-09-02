@@ -1,10 +1,11 @@
 # AI generated (refactored/authored with Claude Code)
-"""Animated: khong gian dac trung bi "bien hinh" qua tung lop cua MLP sau.
+"""Animated: how a deep MLP progressively "morphs" the feature space.
 
-Chay truc tiep: python BasicML/demo/plot_dynamic_layer_morphing.py
-3 panel: bien quyet dinh o khong gian dau vao, diem du lieu morphing qua
-tung lop, va luoi toa do bi bien dang qua tung lop. Khong gian > 2D duoc
-chieu ve 2D bang PCA.
+Run directly: python BasicML/demo/plot_dynamic_layer_morphing.py
+
+Three panels: the decision boundary in the input space, the data points
+morphing layer by layer, and the coordinate grid being deformed layer by
+layer. Spaces with more than 2 dimensions are projected down to 2D with PCA.
 """
 import os
 import sys
@@ -32,7 +33,7 @@ SEED           = 42
 N_SAMPLES      = 200
 NOISE          = 0.15
 
-HIDDEN_DIMS    = [16, 12, 8]           # kich thuoc cac lop an; doi tu do
+HIDDEN_DIMS    = [16, 12, 8]           # hidden layer sizes; tweak freely
 ACTIVATION: Callable[[], Module] = Sigmoid
 INIT_TYPE      = "xavier"
 LEARN_RATE     = 0.20
@@ -44,15 +45,20 @@ GRID_POINTS    = 120
 X_LINE_SPAN    = (-1.5, 2.5)
 Y_LINE_SPAN    = (-1.0, 1.5)
 
-TRANSITION_FRAMES = 45                 # frame cho moi lan morph giua 2 lop
-PAUSE_FRAMES      = 15                 # frame dung lai o moi lop
-RESET_FRAMES      = 60                 # frame morph tu lop cuoi ve dau vao
+TRANSITION_FRAMES = 45                 # frames per morph between two layers
+PAUSE_FRAMES      = 15                 # frames held still at each layer
+RESET_FRAMES      = 60                 # frames to morph from the last layer back to the input
 FRAME_INTERVAL    = 35
 FIG_SIZE          = (20, 6.5)
 # ----------------------------------------------------------------------
 
 
 def build_model() -> Sequential:
+    """Build the MLP with ``HIDDEN_DIMS`` hidden layers and ``ACTIVATION``.
+
+    Returns:
+        A :class:`Sequential` mapping 2 input features to a single probability.
+    """
     layers: list[Module] = []
     in_dim = 2
     for out_dim in HIDDEN_DIMS:
@@ -65,13 +71,20 @@ def build_model() -> Sequential:
 
 
 def train(model: Sequential, x: np.ndarray, y: np.ndarray) -> None:
+    """Train ``model`` in place with BCE loss and momentum SGD.
+
+    Args:
+        model: The MLP to train.
+        x: Input features, shape ``(N_SAMPLES, 2)``.
+        y: Binary targets, shape ``(N_SAMPLES, 1)``.
+    """
     criterion = BinaryCrossEntropy()
     optimizer = Momentum(model.parameters(), lr=LEARN_RATE, momentum=MOMENTUM)
 
     y_pred = model(x)
     for _ in range(EPOCHS):
         y_pred = model(x)
-        criterion(y_pred, y)  # cap nhat cache cho backward()
+        criterion(y_pred, y)  # refresh the loss cache used by backward()
         model.backward(criterion.backward())
         optimizer.step()
         optimizer.zero_grad()
@@ -82,7 +95,17 @@ def train(model: Sequential, x: np.ndarray, y: np.ndarray) -> None:
 
 def project_to_2d(data: np.ndarray,
                   basis: Optional[np.ndarray] = None) -> tuple[np.ndarray, Optional[np.ndarray]]:
-    """Chieu ve (N, 2). Voi dau ra 1D thi dat truc Y = 0."""
+    """Project data to ``(N, 2)``, using PCA when it has more than 2 columns.
+
+    Args:
+        data: Array of shape ``(N,)``, ``(N, 1)``, ``(N, 2)`` or ``(N, D)``.
+        basis: Optional pre-computed ``(D, 2)`` projection basis; when omitted
+            and ``D > 2``, the top-2 principal components are used.
+
+    Returns:
+        Tuple ``(data_2d, basis)``. For 1D data the second axis is set to 0 and
+        ``basis`` is ``None``.
+    """
     data = np.asarray(data)
     if data.ndim == 1:
         data = data.reshape(-1, 1)
@@ -101,7 +124,15 @@ def project_to_2d(data: np.ndarray,
 
 def project_lines(lines: list[np.ndarray],
                   basis: Optional[np.ndarray]) -> list[np.ndarray]:
-    """Ep moi duong luoi ve dang (N, 2)."""
+    """Project each grid line to ``(N, 2)`` using the same rules as ``project_to_2d``.
+
+    Args:
+        lines: List of polyline vertex arrays, each ``(N, D)``.
+        basis: The ``(D, 2)`` projection basis to reuse, or ``None``.
+
+    Returns:
+        The list of projected ``(N, 2)`` polylines.
+    """
     out = []
     for line in lines:
         line = np.asarray(line)
@@ -119,6 +150,12 @@ def project_lines(lines: list[np.ndarray],
 
 
 def make_grid_lines() -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """Build the flat input-space coordinate grid.
+
+    Returns:
+        Tuple ``(horizontal, vertical)`` of polyline lists spanning
+        ``X_LINE_SPAN`` x ``Y_LINE_SPAN``.
+    """
     x_lo, x_hi = X_LINE_SPAN
     y_lo, y_hi = Y_LINE_SPAN
     horizontal = [np.column_stack([np.linspace(x_lo, x_hi, GRID_POINTS),
@@ -132,7 +169,18 @@ def make_grid_lines() -> tuple[list[np.ndarray], list[np.ndarray]]:
 
 def collect_stages(model: Sequential, x: np.ndarray,
                    horizontal: list[np.ndarray], vertical: list[np.ndarray]):
-    """Bieu dien 2D cua diem + luoi sau tung lop (stage 0 = dau vao)."""
+    """Compute the 2D view of points and grid after each layer (stage 0 = input).
+
+    Args:
+        model: The trained MLP whose layers are applied one at a time.
+        x: Input features, shape ``(N_SAMPLES, 2)``.
+        horizontal: Horizontal input-space grid lines.
+        vertical: Vertical input-space grid lines.
+
+    Returns:
+        Tuple ``(stage_points, stage_horizontal, stage_vertical, stage_names)``,
+        each a list with one entry per stage (input plus one per layer).
+    """
     stage_points     = [x]
     stage_horizontal = [horizontal]
     stage_vertical   = [vertical]
@@ -155,14 +203,43 @@ def collect_stages(model: Sequential, x: np.ndarray,
 
 
 def cosine_ease(t: float) -> float:
+    """Map ``t`` in ``[0, 1]`` through a cosine ease-in-out curve.
+
+    Args:
+        t: Linear progress in ``[0, 1]``.
+
+    Returns:
+        The eased progress, ``0.5 * (1 - cos(pi t))``.
+    """
     return 0.5 * (1 - np.cos(np.pi * t))
 
 
 def lerp(a, b, t: float):
+    """Linearly interpolate between ``a`` and ``b``.
+
+    Args:
+        a: Start value (scalar or array).
+        b: End value, broadcastable with ``a``.
+        t: Interpolation factor in ``[0, 1]``.
+
+    Returns:
+        ``(1 - t) * a + t * b``.
+    """
     return (1 - t) * a + t * b
 
 
 def animate(model: Sequential, x, y, stages) -> FuncAnimation:
+    """Animate the three morphing panels across the network's stages.
+
+    Args:
+        model: The trained MLP (used only for the static decision-boundary plot).
+        x: Input features, shape ``(N_SAMPLES, 2)``.
+        y: Binary targets, shape ``(N_SAMPLES, 1)``.
+        stages: The tuple returned by :func:`collect_stages`.
+
+    Returns:
+        The :class:`~matplotlib.animation.FuncAnimation` handle.
+    """
     stage_points, stage_horizontal, stage_vertical, stage_names = stages
     num_stages   = len(stage_points)
     n_horizontal = len(stage_horizontal[0])
@@ -173,6 +250,7 @@ def animate(model: Sequential, x, y, stages) -> FuncAnimation:
     total_frames = cycle_len + RESET_FRAMES
 
     def state_at(frame: int):
+        """Return ``(points, horiz, vert, note)`` interpolated for ``frame``."""
         pos = frame % total_frames
         if pos >= cycle_len:
             t     = cosine_ease((pos - cycle_len) / RESET_FRAMES)
@@ -214,6 +292,7 @@ def animate(model: Sequential, x, y, stages) -> FuncAnimation:
                      for _ in range(n_vertical)]
 
     def update(frame: int):
+        """Redraw the scatter and grid artists for animation ``frame``."""
         points, horiz, vert, note = state_at(frame)
         scatter.set_offsets(points)
         for artist, line in zip(horiz_artists, horiz):
@@ -244,6 +323,7 @@ def animate(model: Sequential, x, y, stages) -> FuncAnimation:
 
 
 def main() -> None:
+    """Train the deep MLP, collect per-layer stages, and show the animation."""
     np.random.seed(SEED)
     x, y  = make_moons(n_samples=N_SAMPLES, noise=NOISE, random_state=SEED)
     model = build_model()

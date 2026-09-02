@@ -1,8 +1,10 @@
 # AI generated (refactored/authored with Claude Code)
-"""Animated 3D cost-surface cho logistic regression tren du lieu 1D.
+"""Animated 3D cost surface for logistic regression on 1D data.
 
-Chay truc tiep: python BasicML/demo/plot_dynamic_3d_logistic.py
-Chi 1 panel: mat cost BCE trong khong gian (w, b) va duong di momentum.
+Run directly: python BasicML/demo/plot_dynamic_3d_logistic.py
+
+A single panel: the BCE cost surface over ``(w, b)`` space with the momentum
+optimizer's path traced across it as training progresses.
 """
 import os
 import sys
@@ -38,8 +40,8 @@ MOM_CYCLE      = (0.95, 0.98, 0.95)   # (peak, base, final)
 WARMUP_FRAC    = 0.3
 
 GRID_RESOLUTION = 50
-GRID_MARGIN     = 7.5                  # do rong (w, b) quanh quy dao
-Z_HEADROOM      = 15.0                 # chan tren cua truc cost
+GRID_MARGIN     = 7.5                  # (w, b) padding around the trajectory
+Z_HEADROOM      = 15.0                 # upper clip of the cost axis
 FRAME_INTERVAL  = 10
 FIG_SIZE        = (10, 8)
 # ----------------------------------------------------------------------
@@ -47,12 +49,27 @@ FIG_SIZE        = (10, 8)
 
 @dataclass
 class OneCycle:
-    """Lich trinh one-cycle: cosine warmup roi cosine anneal."""
+    """One-cycle schedule: a cosine warmup followed by a cosine anneal.
+
+    Attributes:
+        lr: ``(base, peak, final)`` learning rates.
+        momentum: ``(peak, base, final)`` momentum values (momentum moves
+            opposite to the learning rate).
+        warmup_frac: Fraction of training spent in the warmup phase.
+    """
     lr:          tuple[float, float, float]
     momentum:    tuple[float, float, float]
     warmup_frac: float
 
     def at(self, progress: float) -> tuple[float, float]:
+        """Return ``(lr, momentum)`` at a given point in training.
+
+        Args:
+            progress: Training progress in ``[0, 1]``.
+
+        Returns:
+            Tuple ``(lr, momentum)`` for this step.
+        """
         lr_base, lr_peak, lr_final    = self.lr
         mom_peak, mom_base, mom_final = self.momentum
 
@@ -71,12 +88,25 @@ class OneCycle:
 
 @dataclass
 class TrainingHistory:
+    """Per-epoch trajectory recorded during training.
+
+    Attributes:
+        weight: Weight value at each epoch, shape ``(EPOCHS,)``.
+        bias: Bias value at each epoch, shape ``(EPOCHS,)``.
+        cost: BCE cost at each epoch, shape ``(EPOCHS,)``.
+    """
     weight: np.ndarray
     bias:   np.ndarray
     cost:   np.ndarray
 
 
 def make_threshold_dataset() -> tuple[np.ndarray, np.ndarray]:
+    """Generate a standardized 1D threshold classification dataset.
+
+    Returns:
+        Tuple ``(x, y)`` of float64 arrays shaped ``(N_SAMPLES, 1)``; ``x`` is
+        standardized to zero mean and unit variance.
+    """
     rng       = random.Random(SEED)
     lo, hi    = X_RANGE
     threshold = lo + LABEL_FRACTION * (hi - lo)
@@ -88,6 +118,18 @@ def make_threshold_dataset() -> tuple[np.ndarray, np.ndarray]:
 
 
 def train_and_record(x: np.ndarray, y: np.ndarray) -> TrainingHistory:
+    """Train a ``Linear + Sigmoid`` model and record its ``(w, b, cost)`` path.
+
+    The linear layer is forced to start at ``(INIT_W, INIT_B)`` so the animated
+    path always begins from the same corner of the surface.
+
+    Args:
+        x: Input features, shape ``(N_SAMPLES, 1)``.
+        y: Binary targets, shape ``(N_SAMPLES, 1)``.
+
+    Returns:
+        A :class:`TrainingHistory` with one entry per epoch.
+    """
     linear = Linear(in_features=1, out_features=1)
     assert linear.b is not None
     linear.w.data = np.array([[INIT_W]])
@@ -127,6 +169,22 @@ def train_and_record(x: np.ndarray, y: np.ndarray) -> TrainingHistory:
 def bce_cost_surface(x: np.ndarray, y: np.ndarray,
                      w_range: tuple[float, float],
                      b_range: tuple[float, float]) -> tuple[np.ndarray, ...]:
+    """Evaluate the BCE cost on a ``(w, b)`` grid.
+
+    For each grid point the sigmoid predictions over the whole dataset are
+    formed and the mean binary cross-entropy is computed (probabilities are
+    clipped to avoid ``log(0)``).
+
+    Args:
+        x: Input features, shape ``(N_SAMPLES, 1)``.
+        y: Binary targets, shape ``(N_SAMPLES, 1)``.
+        w_range: ``(min, max)`` weight range for the grid.
+        b_range: ``(min, max)`` bias range for the grid.
+
+    Returns:
+        Tuple ``(w_grid, b_grid, z_grid)``, each shaped
+        ``(GRID_RESOLUTION, GRID_RESOLUTION)``.
+    """
     w_vals = np.linspace(*w_range, GRID_RESOLUTION)
     b_vals = np.linspace(*b_range, GRID_RESOLUTION)
     w_grid, b_grid = np.meshgrid(w_vals, b_vals)
@@ -138,6 +196,17 @@ def bce_cost_surface(x: np.ndarray, y: np.ndarray,
 
 
 def animate(x: np.ndarray, y: np.ndarray, history: TrainingHistory) -> FuncAnimation:
+    """Draw the 3D cost surface and animate the optimizer path over it.
+
+    Args:
+        x: Input features, shape ``(N_SAMPLES, 1)``.
+        y: Binary targets, shape ``(N_SAMPLES, 1)``.
+        history: Recorded ``(w, b, cost)`` trajectory to animate.
+
+    Returns:
+        The :class:`~matplotlib.animation.FuncAnimation` handle (kept alive so
+        the animation is not garbage-collected).
+    """
     w_opt, b_opt = history.weight[-1], history.bias[-1]
     min_cost     = history.cost[-1]
 
@@ -167,6 +236,7 @@ def animate(x: np.ndarray, y: np.ndarray, history: TrainingHistory) -> FuncAnima
     ax.legend()
 
     def update(frame: int):
+        """Extend the traced path to include epoch ``frame``."""
         path_line_3d.set_data(history.weight[:frame + 1], history.bias[:frame + 1])
         path_line_3d.set_3d_properties(history.cost[:frame + 1])
         return path_line_3d,
@@ -180,6 +250,7 @@ def animate(x: np.ndarray, y: np.ndarray, history: TrainingHistory) -> FuncAnima
 
 
 def main() -> None:
+    """Generate data, train while recording history, then show the animation."""
     x, y    = make_threshold_dataset()
     history = train_and_record(x, y)
     animate(x, y, history)
