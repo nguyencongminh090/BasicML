@@ -1,197 +1,259 @@
-# AI generated
+# AI generated (refactored/authored with Claude Code)
+"""Animated linear-regression training tren BasicML/data.csv.
 
+Chay truc tiep: python BasicML/demo/plot_dynamic_linear.py
+Hien 5 panel: duong fit, learning curve, cost-vs-w, va duong di gradient
+(2D contour + 3D surface) voi lich trinh one-cycle cho lr/momentum.
+"""
 import os
 import sys
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-from matplotlib.animation import FuncAnimation
+from dataclasses import dataclass
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-np.set_printoptions(suppress=True, precision=4)
 
-from basicml.nn.linear import Linear
-from basicml.nn.loss import MSELoss
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+
+from basicml.nn.linear      import Linear
+from basicml.nn.loss        import MSELoss
 from basicml.optim.momentum import Momentum
 
+np.set_printoptions(suppress=True, precision=4)
 
-def main():
-    base_dir  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    data_path = os.path.join(base_dir, 'data.csv')
-    data      = pd.read_csv(data_path)
+# --- CONFIG --------------------------------------------------------------
+REPO_ROOT   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_PATH   = os.path.join(REPO_ROOT, "data.csv")
+X_COLUMNS   = ["X"]
+Y_COLUMNS   = ["Y"]
 
-    X = data[['X']].values
-    Y = data[['Y']].values
+INIT_W      = -1.0
+INIT_B      = -2.0
 
-    # x_mean = X.mean()
-    # x_std  = X.std()
-    # X      = (X - x_mean) / x_std
+MAX_EPOCHS  = 1000
+LR_CYCLE    = (0.005, 0.08, 0.001)    # (base, peak, final)
+MOM_CYCLE   = (0.95, 0.70, 0.875)     # (peak, base, final) — theo one_cycle()
+WARMUP_FRAC = 0.3
 
-    epochs = 1000
-    model  = Linear(features=1)
+EARLY_STOP_PATIENCE  = 15
+EARLY_STOP_MIN_DELTA = 1e-4
 
-    model.w.data = np.array([[-1.0]])
-    model.b.data = np.array([[-2.0]])
+GRID_RESOLUTION = 50
+FRAME_INTERVAL  = 5                    # ms giua cac frame
+FIG_SIZE        = (18, 10)
+# ----------------------------------------------------------------------
 
-    loss = MSELoss()
 
-    base_lr, max_lr, final_lr    = 0.005, 0.08, 0.001
-    max_mom, base_mom, final_mom = 0.95, 0.70, 0.875
-    pct_start                    = 0.3
+@dataclass
+class OneCycle:
+    """Lich trinh one-cycle: cosine warmup roi cosine anneal."""
+    lr:          tuple[float, float, float]   # (base, peak, final)
+    momentum:    tuple[float, float, float]   # (peak, base, final)
+    warmup_frac: float
 
-    optim      = Momentum(model.parameters(), lr=base_lr, momentum=max_mom)
-    patience   = 15
-    min_delta  = 1e-4
-    best_loss  = float('inf')
-    no_improve = 0
+    def at(self, progress: float) -> tuple[float, float]:
+        lr_base, lr_peak, lr_final    = self.lr
+        mom_peak, mom_base, mom_final = self.momentum
 
-    w_hist    = []
-    b_hist    = []
-    loss_hist = []
+        if progress < self.warmup_frac:
+            phase  = progress / self.warmup_frac
+            factor = 0.5 * (1 - np.cos(np.pi * phase))          # 0 -> 1
+            lr     = lr_base + (lr_peak - lr_base) * factor
+            mom    = mom_peak - (mom_peak - mom_base) * factor
+        else:
+            phase  = (progress - self.warmup_frac) / (1.0 - self.warmup_frac)
+            factor = 0.5 * (1 + np.cos(np.pi * phase))          # 1 -> 0
+            lr     = lr_final + (lr_peak - lr_final) * factor
+            mom    = mom_final + (mom_base - mom_final) * factor
+        return lr, mom
+
+
+@dataclass
+class TrainingHistory:
+    weight: np.ndarray
+    bias:   np.ndarray
+    cost:   np.ndarray
+
+
+def load_dataset(path: str) -> tuple[np.ndarray, np.ndarray]:
+    frame = pd.read_csv(path)
+    x     = frame[X_COLUMNS].to_numpy(dtype=np.float64)
+    y     = frame[Y_COLUMNS].to_numpy(dtype=np.float64)
+    return x, y
+
+
+def train_and_record(x: np.ndarray, y: np.ndarray) -> TrainingHistory:
+    model = Linear(in_features=1, out_features=1)
+    assert model.b is not None
+    model.w.data = np.array([[INIT_W]])
+    model.b.data = np.array([[INIT_B]])
+
+    criterion = MSELoss()
+    optimizer = Momentum(model.parameters(), lr=LR_CYCLE[0], momentum=MOM_CYCLE[0])
+    schedule  = OneCycle(LR_CYCLE, MOM_CYCLE, WARMUP_FRAC)
+
+    weight_hist: list[float] = []
+    bias_hist:   list[float] = []
+    cost_hist:   list[float] = []
+
+    best_cost   = float("inf")
+    no_improve  = 0
 
     print("Training model to gather history...")
-    for epoch in range(epochs):
-        pct = epoch / epochs
-        if pct < pct_start:
-            phase_pct      = pct / pct_start
-            factor         = 0.5 * (1 - np.cos(np.pi * phase_pct))
-            optim.lr       = base_lr + (max_lr - base_lr) * factor
-            optim.momentum = max_mom - (max_mom - base_mom) * factor
-        else:
-            phase_pct      = (pct - pct_start) / (1.0 - pct_start)
-            factor         = 0.5 * (1 + np.cos(np.pi * phase_pct))
-            optim.lr       = final_lr + (max_lr - final_lr) * factor
-            optim.momentum = final_mom + (base_mom - final_mom) * factor
+    for epoch in range(MAX_EPOCHS):
+        progress = epoch / MAX_EPOCHS
+        optimizer.lr, optimizer.momentum = schedule.at(progress)
 
-        w_hist.append(model.w.data[0, 0])
-        b_hist.append(model.b.data[0, 0])
+        weight_hist.append(model.w.data[0, 0])
+        bias_hist.append(model.b.data[0, 0])
 
-        y_pred = model(X)
-        l      = loss(y_pred, Y)
-        loss_hist.append(l)
+        cost = criterion(model(x), y)
+        cost_hist.append(cost)
 
-        if pct >= pct_start:
-            if l < best_loss - min_delta:
-                best_loss  = l
-                no_improve = 0
+        if progress >= WARMUP_FRAC:
+            if cost < best_cost - EARLY_STOP_MIN_DELTA:
+                best_cost, no_improve = cost, 0
             else:
                 no_improve += 1
-                if no_improve >= patience:
-                    print(f"Adaptive early stopping at epoch {epoch + 1}: Cost did not improve for {patience} epochs (Best: {best_loss:.6f})")
+                if no_improve >= EARLY_STOP_PATIENCE:
+                    print(f"Early stop at epoch {epoch + 1} "
+                          f"(best cost {best_cost:.6f})")
                     break
 
-        grad = loss.backward()
-        model.backward(grad)
-        optim.step()
-        optim.zero_grad()
+        model.backward(criterion.backward())
+        optimizer.step()
+        optimizer.zero_grad()
 
-    w_hist    = np.array(w_hist)
-    b_hist    = np.array(b_hist)
-    loss_hist = np.array(loss_hist)
-    print(f"Training complete. Final Cost: {loss_hist[-1]:.4f}")
+    print(f"Training complete. Final cost: {cost_hist[-1]:.4f}")
+    return TrainingHistory(
+        weight=np.array(weight_hist),
+        bias=np.array(bias_hist),
+        cost=np.array(cost_hist),
+    )
 
-    w_opt    = float(np.cov(X.squeeze(), Y.squeeze())[0, 1] / np.var(X))
-    b_opt    = float(Y.mean() - w_opt * X.mean())
-    min_cost = float(np.mean((w_opt * X + b_opt - Y) ** 2))
 
-    fig = plt.figure(figsize=(18, 10))
+def closed_form_optimum(x: np.ndarray, y: np.ndarray) -> tuple[float, float, float]:
+    w = float(np.cov(x.squeeze(), y.squeeze())[0, 1] / np.var(x))
+    b = float(y.mean() - w * x.mean())
+    cost = float(np.mean((w * x + b - y) ** 2))
+    return w, b, cost
+
+
+def cost_surface(x: np.ndarray, y: np.ndarray,
+                 w_range: tuple[float, float],
+                 b_range: tuple[float, float]) -> tuple[np.ndarray, ...]:
+    w_vals = np.linspace(*w_range, GRID_RESOLUTION)
+    b_vals = np.linspace(*b_range, GRID_RESOLUTION)
+    w_grid, b_grid = np.meshgrid(w_vals, b_vals)
+
+    preds = w_grid[..., None, None] * x + b_grid[..., None, None]
+    z_grid = np.mean((preds - y) ** 2, axis=(-2, -1))
+    return w_grid, b_grid, z_grid
+
+
+def animate(x: np.ndarray, y: np.ndarray, history: TrainingHistory) -> FuncAnimation:
+    w_opt, b_opt, min_cost = closed_form_optimum(x, y)
+
+    w_margin = max(float(np.ptp(history.weight)), 2.0) * 0.4
+    b_margin = max(float(np.ptp(history.bias)), 2.0) * 0.4
+    w_range  = (min(history.weight.min(), w_opt) - w_margin,
+                max(history.weight.max(), w_opt) + w_margin)
+    b_range  = (min(history.bias.min(), b_opt) - b_margin,
+                max(history.bias.max(), b_opt) + b_margin)
+
+    w_grid, b_grid, z_grid = cost_surface(x, y, w_range, b_range)
+
+    fig = plt.figure(figsize=FIG_SIZE)
     if fig.canvas.manager is not None:
-        fig.canvas.manager.set_window_title('BasicML - Linear Regression Dynamic Training')
+        fig.canvas.manager.set_window_title("BasicML - Linear Regression Dynamic Training")
 
-    ax1   = fig.add_subplot(231)
-    ax1.scatter(X, Y, color='blue', alpha=0.6, label='Training Data')
-    line, = ax1.plot([], [], color='red', linewidth=2, label='Fitted Line')
-    ax1.set_xlim(X.min() - 1, X.max() + 1)
-    ax1.set_ylim(Y.min() - 2, Y.max() + 2)
-    ax1.set_title("1. Linear Regression Fit")
-    ax1.set_xlabel("X (Normalized)")
-    ax1.set_ylabel("Y")
-    ax1.legend()
-    ax1.grid(True, linestyle='--', alpha=0.6)
+    ax_fit  = fig.add_subplot(231)
+    ax_fit.scatter(x, y, color="blue", alpha=0.6, label="Training Data")
+    fit_line, = ax_fit.plot([], [], color="red", linewidth=2, label="Fitted Line")
+    ax_fit.set_xlim(x.min() - 1, x.max() + 1)
+    ax_fit.set_ylim(y.min() - 2, y.max() + 2)
+    ax_fit.set_title("1. Linear Regression Fit")
+    ax_fit.set_xlabel("X")
+    ax_fit.set_ylabel("Y")
+    ax_fit.legend()
+    ax_fit.grid(True, linestyle="--", alpha=0.6)
 
-    ax2        = fig.add_subplot(232)
-    loss_line, = ax2.plot([], [], color='green', linewidth=2, label='MSE Loss')
-    ax2.set_xlim(0, len(loss_hist))
-    ax2.set_ylim(0, max(loss_hist) * 1.1)
-    ax2.set_title("2. Learning Curve")
-    ax2.set_xlabel("Epochs")
-    ax2.set_ylabel("Cost (MSE)")
-    ax2.legend()
-    ax2.grid(True, linestyle='--', alpha=0.6)
+    ax_curve = fig.add_subplot(232)
+    cost_line, = ax_curve.plot([], [], color="green", linewidth=2, label="MSE Loss")
+    ax_curve.set_xlim(0, len(history.cost))
+    ax_curve.set_ylim(0, history.cost.max() * 1.1)
+    ax_curve.set_title("2. Learning Curve")
+    ax_curve.set_xlabel("Epochs")
+    ax_curve.set_ylabel("Cost (MSE)")
+    ax_curve.legend()
+    ax_curve.grid(True, linestyle="--", alpha=0.6)
 
-    ax5          = fig.add_subplot(233)
-    loss_w_line, = ax5.plot([], [], color='purple', linewidth=2, label='Cost vs W')
-    ax5.set_xlim(min(w_hist) - 0.5, max(w_hist) + 0.5)
-    ax5.set_ylim(0, max(loss_hist) * 1.1)
-    ax5.set_title("5. Cost vs Weight (w)")
-    ax5.set_xlabel("Weight (w)")
-    ax5.set_ylabel("Cost (MSE)")
-    ax5.legend()
-    ax5.grid(True, linestyle='--', alpha=0.6)
+    ax_costw = fig.add_subplot(233)
+    costw_line, = ax_costw.plot([], [], color="purple", linewidth=2, label="Cost vs W")
+    ax_costw.set_xlim(history.weight.min() - 0.5, history.weight.max() + 0.5)
+    ax_costw.set_ylim(0, history.cost.max() * 1.1)
+    ax_costw.set_title("5. Cost vs Weight (w)")
+    ax_costw.set_xlabel("Weight (w)")
+    ax_costw.set_ylabel("Cost (MSE)")
+    ax_costw.legend()
+    ax_costw.grid(True, linestyle="--", alpha=0.6)
 
-    ax3      = fig.add_subplot(234)
-    w_margin = max(abs(w_hist.max() - w_hist.min()), 2.0) * 0.4
-    b_margin = max(abs(b_hist.max() - b_hist.min()), 2.0) * 0.4
+    ax_path = fig.add_subplot(234)
+    contour = ax_path.contour(w_grid, b_grid, z_grid,
+                              levels=np.linspace(min_cost, z_grid.max(), 20),
+                              cmap="viridis", alpha=0.8)
+    ax_path.clabel(contour, inline=True, fontsize=8)
+    ax_path.plot([w_opt], [b_opt], marker="*", color="red", markersize=12,
+                 label=f"Global Min ({w_opt:.2f}, {b_opt:.2f})")
+    path_line, = ax_path.plot([], [], color="black", marker="o", markersize=3,
+                              linewidth=1, alpha=0.7, label="Momentum Path")
+    ax_path.set_xlim(*w_range)
+    ax_path.set_ylim(*b_range)
+    ax_path.set_title("3. 2D Gradient Path on Cost Surface")
+    ax_path.set_xlabel("Weight (w)")
+    ax_path.set_ylabel("Bias (b)")
+    ax_path.legend()
 
-    w_min, w_max = min(w_hist.min(), w_opt) - w_margin, max(w_hist.max(), w_opt) + w_margin
-    b_min, b_max = min(b_hist.min(), b_opt) - b_margin, max(b_hist.max(), b_opt) + b_margin
+    ax_surf = fig.add_subplot(235, projection="3d")
+    ax_surf.plot_surface(w_grid, b_grid, z_grid, cmap="viridis", alpha=0.6, edgecolor="none")
+    path_line_3d, = ax_surf.plot([], [], [], color="black", marker="o", markersize=3,
+                                 linewidth=2, label="Momentum Path")
+    ax_surf.plot([w_opt], [b_opt], [min_cost], marker="*", color="red", markersize=12,
+                 label="Global Min")
+    ax_surf.set_title("4. 3D Gradient Path")
+    ax_surf.set_xlabel("Weight (w)")
+    ax_surf.set_ylabel("Bias (b)")
+    ax_surf.set_zlabel("Cost (MSE)")
+    ax_surf.view_init(elev=30, azim=-60)
 
-    w_vals = np.linspace(w_min, w_max, 50)
-    b_vals = np.linspace(b_min, b_max, 50)
-    W_grid, B_grid = np.meshgrid(w_vals, b_vals)
-    Z_grid = np.zeros_like(W_grid)
+    def update(frame: int):
+        w, b = history.weight[frame], history.bias[frame]
+        fit_line.set_data(x.ravel(), (w * x + b).ravel())
 
-    for i in range(len(w_vals)):
-        for j in range(len(b_vals)):
-            pred         = W_grid[j, i] * X + B_grid[j, i]
-            Z_grid[j, i] = np.mean((pred - Y) ** 2)
+        cost_line.set_data(range(frame + 1), history.cost[:frame + 1])
+        costw_line.set_data(history.weight[:frame + 1], history.cost[:frame + 1])
+        path_line.set_data(history.weight[:frame + 1], history.bias[:frame + 1])
+        path_line_3d.set_data(history.weight[:frame + 1], history.bias[:frame + 1])
+        path_line_3d.set_3d_properties(history.cost[:frame + 1])
 
-    contour = ax3.contour(W_grid, B_grid, Z_grid, levels=np.linspace(min_cost, Z_grid.max(), 20), cmap='viridis', alpha=0.8)
-    ax3.clabel(contour, inline=True, fontsize=8)
-    ax3.plot([w_opt], [b_opt], marker='*', color='red', markersize=12, label=f'Global Min ({w_opt:.2f}, {b_opt:.2f})')
+        ax_fit.set_title(f"1. Fit (Epoch {frame}): y = {w:.2f}x + {b:.2f}")
+        ax_curve.set_title(f"2. Learning Curve: Cost = {history.cost[frame]:.4f}")
+        return fit_line, cost_line, costw_line, path_line, path_line_3d
 
-    path_line, = ax3.plot([], [], color='black', marker='o', markersize=3, linewidth=1, alpha=0.7, label='Momentum Path')
-
-    ax3.set_xlim(w_min, w_max)
-    ax3.set_ylim(b_min, b_max)
-    ax3.set_title("3. 2D Gradient Path on Cost Surface")
-    ax3.set_xlabel("Weight (w)")
-    ax3.set_ylabel("Bias (b)")
-    ax3.legend()
-
-    ax4 = fig.add_subplot(235, projection='3d')
-    ax4.plot_surface(W_grid, B_grid, Z_grid, cmap='viridis', alpha=0.6, edgecolor='none')
-    path_line_3d, = ax4.plot([], [], [], color='black', marker='o', markersize=3, linewidth=2, label='Momentum Path')
-    ax4.plot([w_opt], [b_opt], [min_cost], marker='*', color='red', markersize=12, label='Global Min')
-    ax4.set_title("4. 3D Gradient Path")
-    ax4.set_xlabel("Weight (w)")
-    ax4.set_ylabel("Bias (b)")
-    ax4.set_zlabel("Cost (MSE)")
-    ax4.view_init(elev=30, azim=-60)
-
-    def update(frame):
-        y_pred_line = w_hist[frame] * X + b_hist[frame]
-        line.set_data(X, y_pred_line)
-
-        loss_line.set_data(range(frame + 1), loss_hist[:frame + 1])
-        loss_w_line.set_data(w_hist[:frame + 1], loss_hist[:frame + 1])
-
-        path_line.set_data(w_hist[:frame + 1], b_hist[:frame + 1])
-
-        path_line_3d.set_data(w_hist[:frame + 1], b_hist[:frame + 1])
-        path_line_3d.set_3d_properties(loss_hist[:frame + 1])
-
-        ax1.set_title(f"1. Fit (Epoch {frame}): y = {w_hist[frame]:.2f}x + {b_hist[frame]:.2f}")
-        ax2.set_title(f"2. Learning Curve: Cost = {loss_hist[frame]:.4f}")
-
-        return line, loss_line, loss_w_line, path_line, path_line_3d
-
-    print("Generating Animation...")
-    anim = FuncAnimation(fig, update, frames=len(loss_hist), interval=5, blit=False, repeat=False)
-
+    print("Generating animation...")
+    anim = FuncAnimation(fig, update, frames=len(history.cost),
+                         interval=FRAME_INTERVAL, blit=False, repeat=False)
     plt.tight_layout()
     plt.show()
+    return anim
 
 
-if __name__ == '__main__':
+def main() -> None:
+    x, y    = load_dataset(DATA_PATH)
+    history = train_and_record(x, y)
+    animate(x, y, history)
+
+
+if __name__ == "__main__":
     main()
