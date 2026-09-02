@@ -4,4 +4,3 @@ Read this table first — never scan individual `TODO-*.md` files unless you nee
 
 | ID | Status | Priority | Source | Short Description | Instruction | Updated |
 |----|--------|----------|--------|--------------------|-------------|---------|
-| TODO-0001 | in-progress | medium | user-report | MLP support: Sequential, init module, Linear bias, gradient check | — | 2026-09-02 |
