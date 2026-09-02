@@ -4,4 +4,4 @@ Read this table first — never scan individual `TODO-*.md` files unless you nee
 
 | ID | Status | Priority | Source | Short Description | Instruction | Updated |
 |----|--------|----------|--------|--------------------|-------------|---------|
-| _(none)_ | | | | | | |
+| TODO-0008 | in-progress | medium | user-report | Add more activation layers (LeakyReLU/PReLU/ELU/SELU/Softplus/GELU/Swish/Mish/Hardtanh/Hardsigmoid/Softmax/Identity) with manual backward | [TODO-0008](../instructions/TODO-0008.md) | 2026-09-02 |
