@@ -4,4 +4,4 @@ Read this table first — never scan individual `TODO-*.md` files unless you nee
 
 | ID | Status | Priority | Source | Short Description | Instruction | Updated |
 |----|--------|----------|--------|--------------------|-------------|---------|
-| TODO-0007 | open | medium | user-report | Internationalize repo to English + adopt code style (English-only, Clean-Code comments, Google docstrings, SOLID); CLAUDE.md done, codebase migration pending | [TODO-0007](../instructions/TODO-0007.md) | 2026-09-02 |
+| _(none)_ | | | | | | |
