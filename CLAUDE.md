@@ -50,6 +50,11 @@ Standard training loop shape used throughout examples/demos: `forward → loss(y
 - `.agents/` (gitignored) is a duplicate copy of the same skills for other agent tools (e.g. Copilot, Antigravity) that read that convention instead — keep the two in sync manually if a skill changes.
 - `ai-audit/` (repo root) is the audit trail and TODO backlog for AI-assisted work on this repo — timestamped fix-log entries, a TODO backlog, per-TODO instruction notes from chat sessions, and a conversation index. See `ai-audit/README.md` for the full schema; the `ai-audit` skill has the operating fast-paths. **Always read a folder's `INDEX.md` before opening individual item files** — the backlog is designed to survive 100+ items without an agent having to scan the whole tree. `ai-audit/convo/` is gitignored: it indexes conversations by pointing at Claude Code's own native session transcripts (ground truth, no rewrite) rather than requiring a regenerated summary.
 
+## AI audit — mandatory triggers
+
+- **Modify Task (any edit to user code/config/docs).** Whenever you change a file the user owns — not just AI-authored files — you MUST run the `ai-audit` skill and record it: append a dated entry to the relevant `ai-audit/instructions/TODO-XXXX.md` while working, and file a fix-log entry (`ai-audit/fix-log/`) once the change is applied. Trivial, no-op, or purely generated-artifact changes still get a fix-log row. Do not consider a code modification finished until its audit trail exists.
+- **Ambiguity or scope touching the user's own work → ask, don't assume.** If a request is unclear, underspecified, could be interpreted multiple ways, or would alter design/architecture/conventions the user established, stop and ask the user for their decision or opinion before acting (use `AskUserQuestion` for concrete choices). Do not pick a default and proceed on the user's behalf for these; only act unprompted when the intent and approach are unambiguous.
+
 ## Git branching
 
 Two long-lived branches: `main` (protected — releases only) and `dev` (integration branch). Everything else is a short-lived branch off `dev`:
