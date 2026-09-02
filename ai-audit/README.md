@@ -79,10 +79,18 @@ created: YYYY-MM-DD
 updated: YYYY-MM-DD
 priority: medium        # low | medium | high
 tags: []
+code_author: user       # who writes the implementation code: user | ai | both
+ai_role: none           # none | advise | design | review | implement (combine with " + ")
 ---
 ```
 
 Body: **Description** (what needs doing), **Requirement** (acceptance criteria / definition of done), **Notes** (pointer to its `instructions/` file). See `TEMPLATE.md`.
+
+`code_author` / `ai_role` record **authorship** on every TODO — who actually wrote the code
+vs. what the AI contributed. `code_author: user` with `ai_role: design + review` means the
+user typed all the implementation and the AI only advised and reviewed; `code_author: ai`,
+`ai_role: implement` means the AI wrote it. This is the authoritative attribution signal for
+the work — the matching `fix-log` entry and any commit should agree with it.
 
 `todo/INDEX.md` lists **active items only**: `ID | Status | Priority | Source | Short Description | Instruction | Updated`. When a TODO reaches `done` or `cancelled`, move its file *and* its INDEX row into `todo/archive/` — that's what keeps the live index short no matter how much history the project accumulates. IDs are never reused.
 

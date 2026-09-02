@@ -6,6 +6,8 @@ created: YYYY-MM-DD
 updated: YYYY-MM-DD
 priority: medium         # low | medium | high
 tags: []
+code_author: user        # who writes the implementation code: user | ai | both
+ai_role: none            # none | advise | design | review | implement (combine with " + ")
 ---
 
 ## Description
