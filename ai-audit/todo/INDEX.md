@@ -4,4 +4,4 @@ Read this table first — never scan individual `TODO-*.md` files unless you nee
 
 | ID | Status | Priority | Source | Short Description | Instruction | Updated |
 |----|--------|----------|--------|--------------------|-------------|---------|
-| _none_ | | | | | | |
+| TODO-0005 | in-progress | medium | user-report | Demo: animated MLP neuron/weight graph — heatmaps + sparse graph + gradient-flow / activation panels, plain vs Dropout+L2 | [TODO-0005](../instructions/TODO-0005.md) | 2026-09-02 |
