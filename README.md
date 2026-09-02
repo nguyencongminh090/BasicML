@@ -169,7 +169,9 @@ Animated visualizations of training dynamics (`python BasicML/demo/<script>.py`)
 | `plot_dynamic_3d_logistic.py` | The BCE cost surface over `(w, b)` and the momentum trajectory across it. |
 | `plot_dynamic_decision_boundary.py` | A small MLP's decision region bending epoch by epoch on `make_moons`, next to its learning curve. |
 | `plot_dynamic_layer_morphing.py` | Feature space morphing through each layer of a deep MLP — points and a coordinate grid deforming until the classes separate. |
-| `plot_layer_transformations.py` | Static multi-panel version of the above (the banner image). |
+| `plot_dynamic_mlp_graph.py` | A deep MLP as a live neuron/weight graph — per-layer weight & gradient heatmaps, gradient-flow and ReLU activation panels, plain vs Dropout+L2 side by side. |
+| `plot_dynamic_vanishing_gradient.py` | Sigmoid+Xavier vs ReLU+He deep MLP: the per-layer gradient RMS staircase and mean `f'(z)` product make the vanishing gradient visible. |
+| `plot_layer_transformations.py` | Static multi-panel version of the layer-morphing demo (the banner image). |
 
 <p align="center">
   <img src="assets/regularization.png" alt="Overfitting vs L1/L2 regularization on noisy make_moons" width="760"/>

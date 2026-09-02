@@ -1,10 +1,11 @@
 # AI generated (refactored/authored with Claude Code)
-"""Static figure: mot lop an bien doi khong gian dac trung nhu the nao.
+"""Static figure: how one hidden layer transforms the feature space.
 
-Chay truc tiep: python BasicML/demo/plot_layer_transformations.py
-8 panel: diem du lieu qua tung lop (hang 1) va luoi toa do bi bien dang
-qua tung lop (hang 2, kieu Christopher Olah). Khong gian an > 2D duoc
-chieu ve 2D bang PCA.
+Run directly: python BasicML/demo/plot_layer_transformations.py
+
+Eight panels: the data points after each layer (row 1) and the coordinate grid
+deformed by each layer (row 2, Christopher Olah style). Hidden spaces with more
+than 2 dimensions are projected down to 2D with PCA.
 """
 import os
 import sys
@@ -35,8 +36,8 @@ LEARN_RATE  = 0.08
 MOMENTUM    = 0.92
 EPOCHS      = 5000
 
-GRID_LINES  = 25                       # so duong luoi moi huong
-GRID_POINTS = 200                      # so diem tren moi duong luoi
+GRID_LINES  = 25                       # grid lines per direction
+GRID_POINTS = 200                      # points sampled along each grid line
 X_LINE_SPAN = (-1.5, 2.5)
 Y_LINE_SPAN = (-1.0, 1.5)
 
@@ -46,7 +47,16 @@ FIG_SIZE    = (18, 10)
 
 def project_to_2d(data: np.ndarray,
                   basis: Optional[np.ndarray] = None) -> tuple[np.ndarray, np.ndarray]:
-    """Chieu du lieu N-D ve 2D bang PCA (SVD). Tra ve (data_2d, basis)."""
+    """Project N-D data to 2D via PCA (SVD of the centered data).
+
+    Args:
+        data: Array of shape ``(N, D)``.
+        basis: Optional pre-computed ``(D, 2)`` projection basis; when omitted
+            and ``D > 2``, the top-2 principal components are used.
+
+    Returns:
+        Tuple ``(data_2d, basis)`` where ``data_2d`` is ``(N, 2)``.
+    """
     if data.shape[1] == 2:
         return data, np.eye(2)
 
@@ -59,6 +69,16 @@ def project_to_2d(data: np.ndarray,
 
 
 def build_and_train(x: np.ndarray, y: np.ndarray):
+    """Build and train the ``Linear -> Tanh -> Linear -> Sigmoid`` model.
+
+    Args:
+        x: Input features, shape ``(N_SAMPLES, 2)``.
+        y: Binary targets, shape ``(N_SAMPLES, 1)``.
+
+    Returns:
+        Tuple ``(model, linear_1, activation_1, linear_2, activation_2)`` so the
+        caller can probe individual layers.
+    """
     linear_1     = Linear(in_features=2,          out_features=HIDDEN_DIM, init_type="he")
     activation_1 = Tanh()
     linear_2     = Linear(in_features=HIDDEN_DIM, out_features=1,          init_type="xavier")
@@ -80,6 +100,12 @@ def build_and_train(x: np.ndarray, y: np.ndarray):
 
 
 def make_grid_lines() -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """Build the flat input-space coordinate grid.
+
+    Returns:
+        Tuple ``(horizontal, vertical)`` of polyline lists spanning
+        ``X_LINE_SPAN`` x ``Y_LINE_SPAN``.
+    """
     x_lo, x_hi = X_LINE_SPAN
     y_lo, y_hi = Y_LINE_SPAN
 
@@ -93,13 +119,14 @@ def make_grid_lines() -> tuple[list[np.ndarray], list[np.ndarray]]:
 
 
 def plot_layer_transformations() -> None:
+    """Train the model and render the full 8-panel transformation figure."""
     np.random.seed(SEED)
     x, y   = make_moons(n_samples=N_SAMPLES, noise=NOISE, random_state=SEED)
     labels = y.ravel()
 
     model, linear_1, activation_1, linear_2, _ = build_and_train(x, y)
 
-    # Bieu dien tung lop tren du lieu ------------------------------------
+    # Per-layer representation of the data ------------------------------
     z1_raw = linear_1.forward(x)             # (N, HIDDEN_DIM)
     h1_raw = activation_1.forward(z1_raw)    # (N, HIDDEN_DIM)
     z2     = linear_2.forward(h1_raw)        # (N, 1)
@@ -122,7 +149,7 @@ def plot_layer_transformations() -> None:
     projected = HIDDEN_DIM > 2
     dim_label = f"({HIDDEN_DIM}D $\\to$ 2D PCA)" if projected else "(2D Space)"
 
-    # ROW 1: bieu dien diem du lieu qua tung lop ------------------------
+    # ROW 1: data points after each layer ------------------------------
     ax = fig.add_subplot(2, 4, 1)
     plot_decision_boundary(model, x, y, ax=ax,
                            title="1. Input Space (X)\nNon-linear Problem", show=False)
@@ -160,7 +187,7 @@ def plot_layer_transformations() -> None:
     ax.grid(True, linestyle="--", alpha=0.5)
     ax.legend(fontsize=8)
 
-    # ROW 2: bien dang luoi toa do ------------------------------------
+    # ROW 2: coordinate grid deformation ------------------------------
     ax = fig.add_subplot(2, 4, 5)
     for pts in horizontal_grid:
         ax.plot(pts[:, 0], pts[:, 1], color="steelblue", alpha=0.4, linewidth=0.8)

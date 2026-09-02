@@ -1,9 +1,11 @@
 # AI generated (refactored/authored with Claude Code)
-"""Animated linear-regression training tren BasicML/data.csv.
+"""Animated linear-regression training on BasicML/data.csv.
 
-Chay truc tiep: python BasicML/demo/plot_dynamic_linear.py
-Hien 5 panel: duong fit, learning curve, cost-vs-w, va duong di gradient
-(2D contour + 3D surface) voi lich trinh one-cycle cho lr/momentum.
+Run directly: python BasicML/demo/plot_dynamic_linear.py
+
+Five panels: the fitted line, the learning curve, cost-vs-weight, and the
+gradient descent path (2D contour + 3D surface), driven by a one-cycle
+schedule for the learning rate and momentum.
 """
 import os
 import sys
@@ -33,26 +35,40 @@ INIT_B      = -2.0
 
 MAX_EPOCHS  = 1000
 LR_CYCLE    = (0.005, 0.08, 0.001)    # (base, peak, final)
-MOM_CYCLE   = (0.95, 0.70, 0.875)     # (peak, base, final) — theo one_cycle()
+MOM_CYCLE   = (0.95, 0.70, 0.875)     # (peak, base, final) — see OneCycle
 WARMUP_FRAC = 0.3
 
 EARLY_STOP_PATIENCE  = 15
 EARLY_STOP_MIN_DELTA = 1e-4
 
 GRID_RESOLUTION = 50
-FRAME_INTERVAL  = 5                    # ms giua cac frame
+FRAME_INTERVAL  = 5                    # ms between frames
 FIG_SIZE        = (18, 10)
 # ----------------------------------------------------------------------
 
 
 @dataclass
 class OneCycle:
-    """Lich trinh one-cycle: cosine warmup roi cosine anneal."""
+    """One-cycle schedule: a cosine warmup followed by a cosine anneal.
+
+    Attributes:
+        lr: ``(base, peak, final)`` learning rates.
+        momentum: ``(peak, base, final)`` momentum values.
+        warmup_frac: Fraction of training spent in the warmup phase.
+    """
     lr:          tuple[float, float, float]   # (base, peak, final)
     momentum:    tuple[float, float, float]   # (peak, base, final)
     warmup_frac: float
 
     def at(self, progress: float) -> tuple[float, float]:
+        """Return ``(lr, momentum)`` at a given point in training.
+
+        Args:
+            progress: Training progress in ``[0, 1]``.
+
+        Returns:
+            Tuple ``(lr, momentum)`` for this step.
+        """
         lr_base, lr_peak, lr_final    = self.lr
         mom_peak, mom_base, mom_final = self.momentum
 
@@ -71,12 +87,27 @@ class OneCycle:
 
 @dataclass
 class TrainingHistory:
+    """Per-epoch trajectory recorded during training.
+
+    Attributes:
+        weight: Weight value at each epoch.
+        bias: Bias value at each epoch.
+        cost: MSE cost at each epoch.
+    """
     weight: np.ndarray
     bias:   np.ndarray
     cost:   np.ndarray
 
 
 def load_dataset(path: str) -> tuple[np.ndarray, np.ndarray]:
+    """Read the regression dataset from a CSV file.
+
+    Args:
+        path: Path to a CSV file with columns ``X`` and ``Y``.
+
+    Returns:
+        Tuple ``(x, y)`` of float64 arrays, each shaped ``(n_samples, 1)``.
+    """
     frame = pd.read_csv(path)
     x     = frame[X_COLUMNS].to_numpy(dtype=np.float64)
     y     = frame[Y_COLUMNS].to_numpy(dtype=np.float64)
@@ -84,6 +115,19 @@ def load_dataset(path: str) -> tuple[np.ndarray, np.ndarray]:
 
 
 def train_and_record(x: np.ndarray, y: np.ndarray) -> TrainingHistory:
+    """Train a ``Linear`` model and record its ``(w, b, cost)`` path.
+
+    Starts from ``(INIT_W, INIT_B)``, follows the one-cycle schedule, and stops
+    early once the cost stops improving by ``EARLY_STOP_MIN_DELTA`` for
+    ``EARLY_STOP_PATIENCE`` epochs (only after the warmup phase).
+
+    Args:
+        x: Input features, shape ``(n_samples, 1)``.
+        y: Targets, shape ``(n_samples, 1)``.
+
+    Returns:
+        A :class:`TrainingHistory` with one entry per epoch actually run.
+    """
     model = Linear(in_features=1, out_features=1)
     assert model.b is not None
     model.w.data = np.array([[INIT_W]])
@@ -134,6 +178,17 @@ def train_and_record(x: np.ndarray, y: np.ndarray) -> TrainingHistory:
 
 
 def closed_form_optimum(x: np.ndarray, y: np.ndarray) -> tuple[float, float, float]:
+    """Return the least-squares optimum ``(w, b, cost)`` for simple regression.
+
+    Uses ``w = cov(x, y) / var(x)`` and ``b = mean(y) - w * mean(x)``.
+
+    Args:
+        x: Input features, shape ``(n_samples, 1)``.
+        y: Targets, shape ``(n_samples, 1)``.
+
+    Returns:
+        Tuple ``(w, b, mse)`` at the global minimum.
+    """
     w = float(np.cov(x.squeeze(), y.squeeze())[0, 1] / np.var(x))
     b = float(y.mean() - w * x.mean())
     cost = float(np.mean((w * x + b - y) ** 2))
@@ -143,6 +198,18 @@ def closed_form_optimum(x: np.ndarray, y: np.ndarray) -> tuple[float, float, flo
 def cost_surface(x: np.ndarray, y: np.ndarray,
                  w_range: tuple[float, float],
                  b_range: tuple[float, float]) -> tuple[np.ndarray, ...]:
+    """Evaluate the MSE cost on a ``(w, b)`` grid.
+
+    Args:
+        x: Input features, shape ``(n_samples, 1)``.
+        y: Targets, shape ``(n_samples, 1)``.
+        w_range: ``(min, max)`` weight range for the grid.
+        b_range: ``(min, max)`` bias range for the grid.
+
+    Returns:
+        Tuple ``(w_grid, b_grid, z_grid)``, each shaped
+        ``(GRID_RESOLUTION, GRID_RESOLUTION)``.
+    """
     w_vals = np.linspace(*w_range, GRID_RESOLUTION)
     b_vals = np.linspace(*b_range, GRID_RESOLUTION)
     w_grid, b_grid = np.meshgrid(w_vals, b_vals)
@@ -153,6 +220,16 @@ def cost_surface(x: np.ndarray, y: np.ndarray,
 
 
 def animate(x: np.ndarray, y: np.ndarray, history: TrainingHistory) -> FuncAnimation:
+    """Build the 5-panel figure and animate it over the recorded history.
+
+    Args:
+        x: Input features, shape ``(n_samples, 1)``.
+        y: Targets, shape ``(n_samples, 1)``.
+        history: Recorded ``(w, b, cost)`` trajectory to animate.
+
+    Returns:
+        The :class:`~matplotlib.animation.FuncAnimation` handle.
+    """
     w_opt, b_opt, min_cost = closed_form_optimum(x, y)
 
     w_margin = max(float(np.ptp(history.weight)), 2.0) * 0.4
@@ -228,6 +305,7 @@ def animate(x: np.ndarray, y: np.ndarray, history: TrainingHistory) -> FuncAnima
     ax_surf.view_init(elev=30, azim=-60)
 
     def update(frame: int):
+        """Advance every panel to epoch ``frame`` of the recorded history."""
         w, b = history.weight[frame], history.bias[frame]
         fit_line.set_data(x.ravel(), (w * x + b).ravel())
 
@@ -250,6 +328,7 @@ def animate(x: np.ndarray, y: np.ndarray, history: TrainingHistory) -> FuncAnima
 
 
 def main() -> None:
+    """Load the dataset, train while recording history, then show the animation."""
     x, y    = load_dataset(DATA_PATH)
     history = train_and_record(x, y)
     animate(x, y, history)

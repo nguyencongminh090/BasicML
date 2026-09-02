@@ -1,8 +1,10 @@
 # AI generated (refactored/authored with Claude Code)
-"""Animated decision boundary cua mot MLP nho tren dataset moons.
+"""Animated decision boundary of a small MLP on the two-moons dataset.
 
-Chay truc tiep: python BasicML/demo/plot_dynamic_decision_boundary.py
-Panel trai: vung quyet dinh theo epoch. Panel phai: learning curve.
+Run directly: python BasicML/demo/plot_dynamic_decision_boundary.py
+
+Left panel: the decision region as it evolves per epoch. Right panel: the
+learning curve.
 """
 import os
 import sys
@@ -31,9 +33,9 @@ HIDDEN_DIM     = 5
 LEARN_RATE     = 0.08
 MOMENTUM       = 0.92
 EPOCHS         = 2000
-RECORD_EVERY   = 6                      # luu lich su moi bao nhieu epoch
+RECORD_EVERY   = 6                      # record a history frame every N epochs
 
-GRID_STEP      = 0.03                   # do min cua luoi ve bien quyet dinh
+GRID_STEP      = 0.03                   # decision-boundary grid resolution
 GRID_PADDING   = 0.5
 FRAME_INTERVAL = 5
 FIG_SIZE       = (14, 6)
@@ -41,6 +43,11 @@ FIG_SIZE       = (14, 6)
 
 
 def build_model() -> Sequential:
+    """Build the 4-layer MLP (ReLU / Sigmoid / ReLU / Sigmoid) used in the demo.
+
+    Returns:
+        A :class:`Sequential` mapping 2 input features to a single probability.
+    """
     return Sequential(
         Linear(in_features=2,          out_features=HIDDEN_DIM, init_type="he"),
         ReLU(),
@@ -54,6 +61,15 @@ def build_model() -> Sequential:
 
 
 def make_grid(x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build an evaluation mesh covering the data with ``GRID_PADDING`` margin.
+
+    Args:
+        x: Input features, shape ``(n_samples, 2)``.
+
+    Returns:
+        Tuple ``(xx, yy, grid_points)`` where ``xx``/``yy`` are the meshgrid
+        arrays and ``grid_points`` is their flattened ``(n_grid, 2)`` form.
+    """
     x_min, x_max = x[:, 0].min() - GRID_PADDING, x[:, 0].max() + GRID_PADDING
     y_min, y_max = x[:, 1].min() - GRID_PADDING, x[:, 1].max() + GRID_PADDING
     xx, yy = np.meshgrid(np.arange(x_min, x_max, GRID_STEP),
@@ -63,6 +79,18 @@ def make_grid(x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 
 def train_and_record(model: Sequential, x: np.ndarray, y: np.ndarray):
+    """Train ``model`` and snapshot its decision region every ``RECORD_EVERY`` epochs.
+
+    Args:
+        model: The MLP to train (updated in place).
+        x: Input features, shape ``(N_SAMPLES, 2)``.
+        y: Binary targets, shape ``(N_SAMPLES, 1)``.
+
+    Returns:
+        Tuple ``(xx, yy, epochs_seen, cost_hist, accuracy_hist, region_hist)``
+        holding the mesh plus per-frame epoch index, loss, accuracy (%), and
+        the ``0/1`` region map shaped like ``xx``.
+    """
     criterion = BinaryCrossEntropy()
     optimizer = Momentum(model.parameters(), lr=LEARN_RATE, momentum=MOMENTUM)
     xx, yy, grid_points = make_grid(x)
@@ -97,6 +125,21 @@ def train_and_record(model: Sequential, x: np.ndarray, y: np.ndarray):
 
 
 def animate(x, y, xx, yy, epochs_seen, cost_hist, accuracy_hist, region_hist) -> FuncAnimation:
+    """Animate the decision region (left) and the learning curve (right).
+
+    Args:
+        x: Input features, shape ``(N_SAMPLES, 2)``.
+        y: Binary targets, shape ``(N_SAMPLES, 1)``.
+        xx: Meshgrid x-coordinates.
+        yy: Meshgrid y-coordinates.
+        epochs_seen: Epoch index for each recorded frame.
+        cost_hist: BCE loss for each frame.
+        accuracy_hist: Training accuracy (%) for each frame.
+        region_hist: ``0/1`` region map for each frame, shaped like ``xx``.
+
+    Returns:
+        The :class:`~matplotlib.animation.FuncAnimation` handle.
+    """
     fig, (ax_boundary, ax_curve) = plt.subplots(1, 2, figsize=FIG_SIZE)
     if fig.canvas.manager is not None:
         fig.canvas.manager.set_window_title("BasicML - Dynamic Decision Boundary Animation")
@@ -113,6 +156,7 @@ def animate(x, y, xx, yy, epochs_seen, cost_hist, accuracy_hist, region_hist) ->
     ax_curve.legend(loc="upper right")
 
     def update(frame: int):
+        """Redraw the decision region and extend the loss curve for ``frame``."""
         ax_boundary.clear()
         regions = region_hist[frame]
         ax_boundary.contourf(xx, yy, regions, cmap="Spectral", alpha=0.75)
@@ -140,6 +184,7 @@ def animate(x, y, xx, yy, epochs_seen, cost_hist, accuracy_hist, region_hist) ->
 
 
 def main() -> None:
+    """Generate two-moons data, train while recording, then show the animation."""
     np.random.seed(SEED)
     x, y = make_moons(n_samples=N_SAMPLES, noise=NOISE, random_state=SEED)
     model = build_model()

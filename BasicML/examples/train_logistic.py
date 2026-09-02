@@ -1,7 +1,11 @@
 # AI generated (refactored/authored with Claude Code)
-"""Logistic regression tren du lieu 1D sinh ngau nhien (nguong x > threshold).
+"""Logistic regression on a randomly generated 1D threshold dataset.
 
-Chay truc tiep: python BasicML/examples/train_logistic.py
+Run directly: python BasicML/examples/train_logistic.py
+
+Labels are ``1`` when ``x`` exceeds a fixed threshold. A ``Linear + Sigmoid``
+model is trained with binary cross-entropy and momentum SGD, then the fitted
+sigmoid is plotted against the data.
 """
 import os
 import sys
@@ -23,15 +27,15 @@ np.set_printoptions(suppress=True, precision=4)
 # --- CONFIG --------------------------------------------------------------
 SEED           = 0
 N_SAMPLES      = 100
-X_RANGE        = (0.0, 10.0)          # khoang lay mau dac trung x
-LABEL_FRACTION = 0.25                 # nhan = 1 khi x > lo + frac * (hi - lo)
+X_RANGE        = (0.0, 10.0)          # range the feature x is sampled from
+LABEL_FRACTION = 0.25                 # label = 1 when x > lo + frac * (hi - lo)
 
-NORMALIZE      = True                 # chuan hoa x -> hoi tu nhanh hon nhieu
+NORMALIZE      = True                 # standardizing x converges far faster
 
 LEARN_RATE     = 0.07
 MOMENTUM       = 0.95
 MAX_EPOCHS     = 20_000
-LOSS_TARGET    = 0.05                  # du lieu tach roi tuyet doi -> loss giam theo log(epoch)
+LOSS_TARGET    = 0.05                 # perfectly separable data -> loss decays like log(epoch)
 LOG_EVERY      = 2_000
 
 SHOW_PLOT      = True
@@ -39,6 +43,15 @@ SHOW_PLOT      = True
 
 
 def make_threshold_dataset() -> tuple[np.ndarray, np.ndarray]:
+    """Generate the 1D threshold classification dataset.
+
+    Samples ``N_SAMPLES`` points uniformly from ``X_RANGE`` and labels each
+    ``1`` when it lies above ``lo + LABEL_FRACTION * (hi - lo)``. When
+    ``NORMALIZE`` is set, ``x`` is standardized to zero mean and unit variance.
+
+    Returns:
+        Tuple ``(x, y)`` of float64 arrays, each shaped ``(N_SAMPLES, 1)``.
+    """
     rng       = random.Random(SEED)
     lo, hi    = X_RANGE
     threshold = lo + LABEL_FRACTION * (hi - lo)
@@ -51,6 +64,18 @@ def make_threshold_dataset() -> tuple[np.ndarray, np.ndarray]:
 
 
 def train(x: np.ndarray, y: np.ndarray) -> tuple[Sequential, float, int]:
+    """Fit a ``Linear + Sigmoid`` model with binary cross-entropy.
+
+    Stops when the loss drops below ``LOSS_TARGET`` or ``MAX_EPOCHS`` is
+    reached, whichever comes first.
+
+    Args:
+        x: Input features, shape ``(N_SAMPLES, 1)``.
+        y: Binary targets, shape ``(N_SAMPLES, 1)``.
+
+    Returns:
+        Tuple ``(model, final_loss, epochs_run)``.
+    """
     model     = Sequential(Linear(in_features=1, out_features=1), Sigmoid())
     criterion = BinaryCrossEntropy()
     optimizer = Momentum(model.parameters(), lr=LEARN_RATE, momentum=MOMENTUM)
@@ -73,6 +98,13 @@ def train(x: np.ndarray, y: np.ndarray) -> tuple[Sequential, float, int]:
 
 
 def report(model: Sequential, cost: float, epochs: int) -> None:
+    """Print the learned parameters and the fitted decision function.
+
+    Args:
+        model: The trained ``Linear + Sigmoid`` model.
+        cost: Final training loss.
+        epochs: Number of epochs actually run.
+    """
     weight, bias = (p.data.item() for p in model.parameters())
     print(f"converged after {epochs} epochs | loss = {cost:.6f}")
     print(f"w = {weight:.4f}, b = {bias:.4f}")
@@ -80,8 +112,15 @@ def report(model: Sequential, cost: float, epochs: int) -> None:
 
 
 def plot_fit(model: Sequential, x: np.ndarray, y: np.ndarray) -> None:
-    x_line      = np.linspace(x.min(), x.max(), 200).reshape(-1, 1)
-    y_pred      = model(x)
+    """Scatter the data and overlay the fitted sigmoid probability curve.
+
+    Args:
+        model: The trained model.
+        x: Input features, shape ``(N_SAMPLES, 1)``.
+        y: Binary targets, shape ``(N_SAMPLES, 1)``.
+    """
+    x_line = np.linspace(x.min(), x.max(), 200).reshape(-1, 1)
+    y_pred = model(x)
 
     plt.scatter(x, y, c=y.ravel(), cmap="bwr")
     plt.plot(x_line, model(x_line), color="black")
@@ -92,8 +131,9 @@ def plot_fit(model: Sequential, x: np.ndarray, y: np.ndarray) -> None:
 
 
 def main() -> None:
-    x, y                 = make_threshold_dataset()
-    model, cost, epochs  = train(x, y)
+    """Generate data, train the model, print a report, and plot the fit."""
+    x, y                = make_threshold_dataset()
+    model, cost, epochs = train(x, y)
     report(model, cost, epochs)
     if SHOW_PLOT:
         plot_fit(model, x, y)
