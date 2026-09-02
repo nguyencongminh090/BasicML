@@ -10,6 +10,7 @@ class Activation(Module):
 
 class Sigmoid(Activation):
     def __init__(self):
+        super().__init__()
         self.out: Optional[np.ndarray] = None
 
     def forward(self, X: ArrayLike) -> np.ndarray:
@@ -25,6 +26,7 @@ class Sigmoid(Activation):
 
 class ReLU(Activation):
     def __init__(self):
+        super().__init__()
         self.out: Optional[np.ndarray] = None
 
     def forward(self, X: ArrayLike) -> np.ndarray:
@@ -39,6 +41,7 @@ class ReLU(Activation):
 
 class Tanh(Activation):
     def __init__(self):
+        super().__init__()
         self.out: Optional[np.ndarray] = None
 
     def forward(self, X: ArrayLike) -> np.ndarray:

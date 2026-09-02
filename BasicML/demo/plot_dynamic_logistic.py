@@ -1,9 +1,11 @@
 # AI generated (refactored/authored with Claude Code)
-"""Animated logistic-regression training tren du lieu 1D sinh ngau nhien.
+"""Animated logistic-regression training on a randomly generated 1D dataset.
 
-Chay truc tiep: python BasicML/demo/plot_dynamic_logistic.py
-Hien 5 panel: duong sigmoid fit, learning curve, cost-vs-w, va duong di
-gradient (2D contour + 3D surface) voi lich trinh one-cycle cho lr/momentum.
+Run directly: python BasicML/demo/plot_dynamic_logistic.py
+
+Five panels: the fitted sigmoid curve, the learning curve, cost-vs-weight, and
+the gradient descent path (2D contour + 3D surface), driven by a one-cycle
+schedule for the learning rate and momentum.
 """
 import os
 import sys
@@ -25,7 +27,7 @@ from basicml.optim.momentum import Momentum
 np.set_printoptions(suppress=True, precision=4)
 
 # --- CONFIG --------------------------------------------------------------
-SEED           = None                 # dat int de tai lap
+SEED           = None                 # set an int for reproducibility
 N_SAMPLES      = 100
 X_RANGE        = (0.0, 10.0)
 LABEL_FRACTION = 0.25
@@ -46,12 +48,26 @@ FIG_SIZE        = (18, 10)
 
 @dataclass
 class OneCycle:
-    """Lich trinh one-cycle: cosine warmup roi cosine anneal."""
+    """One-cycle schedule: a cosine warmup followed by a cosine anneal.
+
+    Attributes:
+        lr: ``(base, peak, final)`` learning rates.
+        momentum: ``(peak, base, final)`` momentum values.
+        warmup_frac: Fraction of training spent in the warmup phase.
+    """
     lr:          tuple[float, float, float]
     momentum:    tuple[float, float, float]
     warmup_frac: float
 
     def at(self, progress: float) -> tuple[float, float]:
+        """Return ``(lr, momentum)`` at a given point in training.
+
+        Args:
+            progress: Training progress in ``[0, 1]``.
+
+        Returns:
+            Tuple ``(lr, momentum)`` for this step.
+        """
         lr_base, lr_peak, lr_final    = self.lr
         mom_peak, mom_base, mom_final = self.momentum
 
@@ -70,23 +86,48 @@ class OneCycle:
 
 @dataclass
 class TrainingHistory:
+    """Per-epoch trajectory recorded during training.
+
+    Attributes:
+        weight: Weight value at each epoch.
+        bias: Bias value at each epoch.
+        cost: BCE cost at each epoch.
+    """
     weight: np.ndarray
     bias:   np.ndarray
     cost:   np.ndarray
 
 
 def make_threshold_dataset() -> tuple[np.ndarray, np.ndarray]:
+    """Generate a standardized 1D threshold classification dataset.
+
+    Returns:
+        Tuple ``(x, y)`` of float64 arrays shaped ``(N_SAMPLES, 1)``; ``x`` is
+        standardized to zero mean and unit variance.
+    """
     rng       = random.Random(SEED)
     lo, hi    = X_RANGE
     threshold = lo + LABEL_FRACTION * (hi - lo)
 
     x = np.array([rng.uniform(lo, hi) for _ in range(N_SAMPLES)]).reshape(-1, 1)
     y = (x > threshold).astype(np.float64)
-    x = (x - x.mean()) / x.std()          # chuan hoa
+    x = (x - x.mean()) / x.std()          # standardize
     return x, y
 
 
 def train_and_record(x: np.ndarray, y: np.ndarray) -> TrainingHistory:
+    """Train a ``Linear + Sigmoid`` model and record its ``(w, b, cost)`` path.
+
+    The linear layer starts at ``(INIT_W, INIT_B)`` and follows the one-cycle
+    schedule for the full ``EPOCHS``.
+
+    Args:
+        x: Input features, shape ``(N_SAMPLES, 1)``.
+        y: Binary targets, shape ``(N_SAMPLES, 1)``.
+
+    Returns:
+        A :class:`TrainingHistory` with one entry per epoch.
+    """
     linear = Linear(in_features=1, out_features=1)
     assert linear.b is not None
     linear.w.data = np.array([[INIT_W]])
@@ -126,6 +167,18 @@ def train_and_record(x: np.ndarray, y: np.ndarray) -> TrainingHistory:
 def bce_cost_surface(x: np.ndarray, y: np.ndarray,
                      w_range: tuple[float, float],
                      b_range: tuple[float, float]) -> tuple[np.ndarray, ...]:
+    """Evaluate the BCE cost on a ``(w, b)`` grid.
+
+    Args:
+        x: Input features, shape ``(N_SAMPLES, 1)``.
+        y: Binary targets, shape ``(N_SAMPLES, 1)``.
+        w_range: ``(min, max)`` weight range for the grid.
+        b_range: ``(min, max)`` bias range for the grid.
+
+    Returns:
+        Tuple ``(w_grid, b_grid, z_grid)``, each shaped
+        ``(GRID_RESOLUTION, GRID_RESOLUTION)``.
+    """
     w_vals = np.linspace(*w_range, GRID_RESOLUTION)
     b_vals = np.linspace(*b_range, GRID_RESOLUTION)
     w_grid, b_grid = np.meshgrid(w_vals, b_vals)
@@ -137,6 +190,16 @@ def bce_cost_surface(x: np.ndarray, y: np.ndarray,
 
 
 def animate(x: np.ndarray, y: np.ndarray, history: TrainingHistory) -> FuncAnimation:
+    """Build the 5-panel figure and animate it over the recorded history.
+
+    Args:
+        x: Input features, shape ``(N_SAMPLES, 1)``.
+        y: Binary targets, shape ``(N_SAMPLES, 1)``.
+        history: Recorded ``(w, b, cost)`` trajectory to animate.
+
+    Returns:
+        The :class:`~matplotlib.animation.FuncAnimation` handle.
+    """
     w_opt, b_opt = history.weight[-1], history.bias[-1]
     min_cost     = history.cost[-1]
 
@@ -213,6 +276,7 @@ def animate(x: np.ndarray, y: np.ndarray, history: TrainingHistory) -> FuncAnima
     x_line = np.linspace(x.min() - 0.5, x.max() + 0.5, 100).reshape(-1, 1)
 
     def update(frame: int):
+        """Advance every panel to epoch ``frame`` of the recorded history."""
         w, b   = history.weight[frame], history.bias[frame]
         y_curve = 1 / (1 + np.exp(-(w * x_line + b)))
         fit_line.set_data(x_line.ravel(), y_curve.ravel())
@@ -236,6 +300,7 @@ def animate(x: np.ndarray, y: np.ndarray, history: TrainingHistory) -> FuncAnima
 
 
 def main() -> None:
+    """Generate data, train while recording history, then show the animation."""
     x, y    = make_threshold_dataset()
     history = train_and_record(x, y)
     animate(x, y, history)
