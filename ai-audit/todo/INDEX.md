@@ -4,5 +4,4 @@ Read this table first — never scan individual `TODO-*.md` files unless you nee
 
 | ID | Status | Priority | Source | Short Description | Instruction | Updated |
 |----|--------|----------|--------|--------------------|-------------|---------|
-| TODO-0002 | in-progress | medium | user-report | L1/L2/ElasticNet regularization wired into optimizers | [TODO-0002](../instructions/TODO-0002.md) | 2026-09-02 |
-| TODO-0003 | in-progress | medium | user-report | Example: regularization vs overfitting (train/val gap on make_moons) | [TODO-0003](../instructions/TODO-0003.md) | 2026-09-02 |
+| TODO-0004 | in-progress | medium | user-report | Dropout as parameterless nn.Module + train()/eval() on Module/Sequential | [TODO-0004](../instructions/TODO-0004.md) | 2026-09-02 |
