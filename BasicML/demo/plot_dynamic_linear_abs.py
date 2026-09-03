@@ -1,11 +1,15 @@
 # AI generated (refactored/authored with Claude Code)
-"""Animated linear-regression training on BasicML/data.csv.
+"""Animated linear regression under the absolute (MAE / L1) loss.
 
-Run directly: python BasicML/demo/plot_dynamic_linear.py
+Run directly: python BasicML/demo/plot_dynamic_linear_abs.py
 
-Five panels: the fitted line, the learning curve, cost-vs-weight, and the
-gradient descent path (2D contour + 3D surface). A plain Adam optimizer with a
-fixed learning rate drives it, matching examples/train_linear.py.
+Same 5-panel layout as plot_dynamic_linear.py, but the criterion is
+``AbsoluteLoss`` with its proper subgradient ``sign(y_pred - y) / n``. Because
+that gradient has constant magnitude regardless of the residual, a fixed
+learning rate cannot settle onto the optimum: near convergence ``(w, b)`` keeps
+jittering in a band of width ~``lr`` and the loss curve stops decreasing and
+starts bouncing. Contrast with plot_dynamic_linear.py (MSE), whose gradient
+shrinks with the residual and lands smoothly on the minimum.
 """
 import os
 import sys
@@ -19,8 +23,9 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 
 from basicml.nn.linear  import Linear
-from basicml.nn.loss    import MSELoss
+from basicml.nn.loss    import AbsoluteLoss
 from basicml.optim.adam import Adam
+from basicml.optim.sgd  import SGD
 
 np.set_printoptions(suppress=True, precision=4)
 
@@ -34,7 +39,11 @@ INIT_W      = -1.0
 INIT_B      = -2.0
 
 EPOCHS      = 400
-LEARN_RATE  = 0.7
+LEARN_RATE  = 0.01                    # the MAE subgradient is bounded (|.| <= 1/n)
+                                     # so it never overflows, but a fixed lr this
+                                     # size makes (w, b) jitter near the optimum
+                                     # instead of settling
+
 
 GRID_RESOLUTION = 50
 FRAME_INTERVAL  = 5                    # ms between frames
@@ -49,7 +58,7 @@ class TrainingHistory:
     Attributes:
         weight: Weight value at each epoch.
         bias: Bias value at each epoch.
-        cost: MSE cost at each epoch.
+        cost: MAE cost at each epoch.
     """
     weight: np.ndarray
     bias:   np.ndarray
@@ -72,10 +81,11 @@ def load_dataset(path: str) -> tuple[np.ndarray, np.ndarray]:
 
 
 def train_and_record(x: np.ndarray, y: np.ndarray) -> TrainingHistory:
-    """Train a ``Linear`` model and record its ``(w, b, cost)`` path.
+    """Train a ``Linear`` model under ``AbsoluteLoss`` and record ``(w, b, cost)``.
 
-    Starts from ``(INIT_W, INIT_B)`` and runs ``EPOCHS`` full-batch Adam steps
-    at a fixed ``LEARN_RATE``, matching examples/train_linear.py.
+    Starts from ``(INIT_W, INIT_B)`` and runs ``EPOCHS`` full-batch SGD steps at
+    a fixed ``LEARN_RATE``. ``cost`` is the mean absolute error and the optimizer
+    follows its proper subgradient ``sign(y_pred - y) / n``.
 
     Args:
         x: Input features, shape ``(n_samples, 1)``.
@@ -89,8 +99,8 @@ def train_and_record(x: np.ndarray, y: np.ndarray) -> TrainingHistory:
     model.w.data = np.array([[INIT_W]])
     model.b.data = np.array([[INIT_B]])
 
-    criterion = MSELoss()
-    optimizer = Adam(model.parameters(), lr=LEARN_RATE)
+    criterion = AbsoluteLoss()
+    optimizer = SGD(model.parameters(), lr=LEARN_RATE)
 
     weight_hist: list[float] = []
     bias_hist:   list[float] = []
@@ -116,28 +126,37 @@ def train_and_record(x: np.ndarray, y: np.ndarray) -> TrainingHistory:
     )
 
 
-def closed_form_optimum(x: np.ndarray, y: np.ndarray) -> tuple[float, float, float]:
-    """Return the least-squares optimum ``(w, b, cost)`` for simple regression.
+def l1_optimum(x: np.ndarray, y: np.ndarray) -> tuple[float, float, float]:
+    """Return the minimum-MAE line ``(w, b, cost)`` by a dense local grid search.
 
-    Uses ``w = cov(x, y) / var(x)`` and ``b = mean(y) - w * mean(x)``.
+    The mean-absolute-error surface has no simple closed form, so this seeds the
+    search at the least-squares solution and picks the best ``(w, b)`` on a fine
+    grid around it.
 
     Args:
         x: Input features, shape ``(n_samples, 1)``.
         y: Targets, shape ``(n_samples, 1)``.
 
     Returns:
-        Tuple ``(w, b, mse)`` at the global minimum.
+        Tuple ``(w, b, mae)`` at the grid minimum.
     """
-    w = float(np.cov(x.squeeze(), y.squeeze())[0, 1] / np.var(x))
-    b = float(y.mean() - w * x.mean())
-    cost = float(np.mean((w * x + b - y) ** 2))
-    return w, b, cost
+    w0 = float(np.cov(x.squeeze(), y.squeeze())[0, 1] / np.var(x))
+    b0 = float(y.mean() - w0 * x.mean())
+
+    w_vals = np.linspace(w0 - 3.0, w0 + 3.0, 400)
+    b_vals = np.linspace(b0 - 3.0, b0 + 3.0, 400)
+    w_grid, b_grid = np.meshgrid(w_vals, b_vals)
+
+    preds = w_grid[..., None, None] * x + b_grid[..., None, None]
+    cost  = np.mean(np.abs(preds - y), axis=(-2, -1))
+    row, col = np.unravel_index(int(np.argmin(cost)), cost.shape)
+    return float(w_grid[row, col]), float(b_grid[row, col]), float(cost[row, col])
 
 
 def cost_surface(x: np.ndarray, y: np.ndarray,
                  w_range: tuple[float, float],
                  b_range: tuple[float, float]) -> tuple[np.ndarray, ...]:
-    """Evaluate the MSE cost on a ``(w, b)`` grid.
+    """Evaluate the MAE cost on a ``(w, b)`` grid.
 
     Args:
         x: Input features, shape ``(n_samples, 1)``.
@@ -154,7 +173,7 @@ def cost_surface(x: np.ndarray, y: np.ndarray,
     w_grid, b_grid = np.meshgrid(w_vals, b_vals)
 
     preds = w_grid[..., None, None] * x + b_grid[..., None, None]
-    z_grid = np.mean((preds - y) ** 2, axis=(-2, -1))
+    z_grid = np.mean(np.abs(preds - y), axis=(-2, -1))
     return w_grid, b_grid, z_grid
 
 
@@ -169,7 +188,7 @@ def animate(x: np.ndarray, y: np.ndarray, history: TrainingHistory) -> FuncAnima
     Returns:
         The :class:`~matplotlib.animation.FuncAnimation` handle.
     """
-    w_opt, b_opt, min_cost = closed_form_optimum(x, y)
+    w_opt, b_opt, min_cost = l1_optimum(x, y)
 
     w_margin = max(float(np.ptp(history.weight)), 2.0) * 0.4
     b_margin = max(float(np.ptp(history.bias)), 2.0) * 0.4
@@ -182,7 +201,7 @@ def animate(x: np.ndarray, y: np.ndarray, history: TrainingHistory) -> FuncAnima
 
     fig = plt.figure(figsize=FIG_SIZE)
     if fig.canvas.manager is not None:
-        fig.canvas.manager.set_window_title("BasicML - Linear Regression Dynamic Training")
+        fig.canvas.manager.set_window_title("BasicML - Linear Regression (Absolute / MAE Loss)")
 
     ax_fit  = fig.add_subplot(231)
     ax_fit.scatter(x, y, color="blue", alpha=0.6, label="Training Data")
@@ -196,22 +215,26 @@ def animate(x: np.ndarray, y: np.ndarray, history: TrainingHistory) -> FuncAnima
     ax_fit.grid(True, linestyle="--", alpha=0.6)
 
     ax_curve = fig.add_subplot(232)
-    cost_line, = ax_curve.plot([], [], color="green", linewidth=2, label="MSE Loss")
+    cost_line, = ax_curve.plot([], [], color="green", linewidth=2, label="MAE Loss")
+    curve_dot, = ax_curve.plot([], [], "o", color="red", markersize=8, zorder=5,
+                               label="Current J(w, b)")
     ax_curve.set_xlim(0, len(history.cost))
     ax_curve.set_ylim(0, history.cost.max() * 1.1)
     ax_curve.set_title("2. Learning Curve")
     ax_curve.set_xlabel("Epochs")
-    ax_curve.set_ylabel("Cost (MSE)")
+    ax_curve.set_ylabel("Cost (MAE)")
     ax_curve.legend()
     ax_curve.grid(True, linestyle="--", alpha=0.6)
 
     ax_costw = fig.add_subplot(233)
     costw_line, = ax_costw.plot([], [], color="purple", linewidth=2, label="Cost vs W")
+    costw_dot, = ax_costw.plot([], [], "o", color="red", markersize=8, zorder=5,
+                               label="Current (w, J)")
     ax_costw.set_xlim(history.weight.min() - 0.5, history.weight.max() + 0.5)
     ax_costw.set_ylim(0, history.cost.max() * 1.1)
     ax_costw.set_title("5. Cost vs Weight (w)")
     ax_costw.set_xlabel("Weight (w)")
-    ax_costw.set_ylabel("Cost (MSE)")
+    ax_costw.set_ylabel("Cost (MAE)")
     ax_costw.legend()
     ax_costw.grid(True, linestyle="--", alpha=0.6)
 
@@ -221,9 +244,11 @@ def animate(x: np.ndarray, y: np.ndarray, history: TrainingHistory) -> FuncAnima
                               cmap="viridis", alpha=0.8)
     ax_path.clabel(contour, inline=True, fontsize=8)
     ax_path.plot([w_opt], [b_opt], marker="*", color="red", markersize=12,
-                 label=f"Global Min ({w_opt:.2f}, {b_opt:.2f})")
+                 label=f"MAE Min ({w_opt:.2f}, {b_opt:.2f})")
     path_line, = ax_path.plot([], [], color="black", marker="o", markersize=3,
                               linewidth=1, alpha=0.7, label="Optimizer Path")
+    path_dot, = ax_path.plot([], [], "o", color="red", markersize=9, zorder=5,
+                             label="Current (w, b)")
     ax_path.set_xlim(*w_range)
     ax_path.set_ylim(*b_range)
     ax_path.set_title("3. 2D Gradient Path on Cost Surface")
@@ -235,12 +260,14 @@ def animate(x: np.ndarray, y: np.ndarray, history: TrainingHistory) -> FuncAnima
     ax_surf.plot_surface(w_grid, b_grid, z_grid, cmap="viridis", alpha=0.6, edgecolor="none")
     path_line_3d, = ax_surf.plot([], [], [], color="black", marker="o", markersize=3,
                                  linewidth=2, label="Optimizer Path")
+    path_dot_3d, = ax_surf.plot([], [], [], "o", color="red", markersize=9,
+                                label="Current (w, b, J)")
     ax_surf.plot([w_opt], [b_opt], [min_cost], marker="*", color="red", markersize=12,
-                 label="Global Min")
+                 label="MAE Min")
     ax_surf.set_title("4. 3D Gradient Path")
     ax_surf.set_xlabel("Weight (w)")
     ax_surf.set_ylabel("Bias (b)")
-    ax_surf.set_zlabel("Cost (MSE)")
+    ax_surf.set_zlabel("Cost (MAE)")
     ax_surf.view_init(elev=30, azim=-60)
 
     def update(frame: int):
@@ -254,9 +281,18 @@ def animate(x: np.ndarray, y: np.ndarray, history: TrainingHistory) -> FuncAnima
         path_line_3d.set_data(history.weight[:frame + 1], history.bias[:frame + 1])
         path_line_3d.set_3d_properties(history.cost[:frame + 1])
 
+        j = history.cost[frame]
+        curve_dot.set_data([frame], [j])
+        costw_dot.set_data([w], [j])
+        path_dot.set_data([w], [b])
+        path_dot_3d.set_data([w], [b])
+        path_dot_3d.set_3d_properties([j])
+
         ax_fit.set_title(f"1. Fit (Epoch {frame}): y = {w:.2f}x + {b:.2f}")
-        ax_curve.set_title(f"2. Learning Curve: Cost = {history.cost[frame]:.4f}")
-        return fit_line, cost_line, costw_line, path_line, path_line_3d
+        ax_curve.set_title(
+            f"2. Learning Curve: J(w, b) = {j:.4f}  |  w = {w:.4f}, b = {b:.4f}")
+        return (fit_line, cost_line, costw_line, path_line, path_line_3d,
+                curve_dot, costw_dot, path_dot, path_dot_3d)
 
     print("Generating animation...")
     anim = FuncAnimation(fig, update, frames=len(history.cost),
