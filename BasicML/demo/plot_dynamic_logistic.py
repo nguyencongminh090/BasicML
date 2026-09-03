@@ -4,8 +4,8 @@
 Run directly: python BasicML/demo/plot_dynamic_logistic.py
 
 Five panels: the fitted sigmoid curve, the learning curve, cost-vs-weight, and
-the gradient descent path (2D contour + 3D surface), driven by a one-cycle
-schedule for the learning rate and momentum.
+the gradient descent path (2D contour + 3D surface). The Adam optimizer drives
+it, with a one-cycle schedule for the learning rate.
 """
 import os
 import sys
@@ -22,7 +22,7 @@ from basicml.nn.sequential  import Sequential
 from basicml.nn.linear      import Linear
 from basicml.nn.activation  import Sigmoid
 from basicml.nn.loss        import BinaryCrossEntropy
-from basicml.optim.momentum import Momentum
+from basicml.optim.adam     import Adam
 
 np.set_printoptions(suppress=True, precision=4)
 
@@ -37,7 +37,6 @@ INIT_B         = -2.0
 
 EPOCHS         = 1500
 LR_CYCLE       = (0.05, 0.4, 0.01)    # (base, peak, final)
-MOM_CYCLE      = (0.95, 0.98, 0.95)   # (peak, base, final)
 WARMUP_FRAC    = 0.3
 
 GRID_RESOLUTION = 50
@@ -48,40 +47,34 @@ FIG_SIZE        = (18, 10)
 
 @dataclass
 class OneCycle:
-    """One-cycle schedule: a cosine warmup followed by a cosine anneal.
+    """One-cycle learning-rate schedule: a cosine warmup then a cosine anneal.
 
     Attributes:
         lr: ``(base, peak, final)`` learning rates.
-        momentum: ``(peak, base, final)`` momentum values.
         warmup_frac: Fraction of training spent in the warmup phase.
     """
     lr:          tuple[float, float, float]
-    momentum:    tuple[float, float, float]
     warmup_frac: float
 
-    def at(self, progress: float) -> tuple[float, float]:
-        """Return ``(lr, momentum)`` at a given point in training.
+    def at(self, progress: float) -> float:
+        """Return the learning rate at a given point in training.
 
         Args:
             progress: Training progress in ``[0, 1]``.
 
         Returns:
-            Tuple ``(lr, momentum)`` for this step.
+            The learning rate for this step.
         """
-        lr_base, lr_peak, lr_final    = self.lr
-        mom_peak, mom_base, mom_final = self.momentum
+        lr_base, lr_peak, lr_final = self.lr
 
         if progress < self.warmup_frac:
             phase  = progress / self.warmup_frac
             factor = 0.5 * (1 - np.cos(np.pi * phase))
-            lr     = lr_base + (lr_peak - lr_base) * factor
-            mom    = mom_peak - (mom_peak - mom_base) * factor
-        else:
-            phase  = (progress - self.warmup_frac) / (1.0 - self.warmup_frac)
-            factor = 0.5 * (1 + np.cos(np.pi * phase))
-            lr     = lr_final + (lr_peak - lr_final) * factor
-            mom    = mom_final + (mom_base - mom_final) * factor
-        return lr, mom
+            return lr_base + (lr_peak - lr_base) * factor
+
+        phase  = (progress - self.warmup_frac) / (1.0 - self.warmup_frac)
+        factor = 0.5 * (1 + np.cos(np.pi * phase))
+        return lr_final + (lr_peak - lr_final) * factor
 
 
 @dataclass
@@ -135,8 +128,8 @@ def train_and_record(x: np.ndarray, y: np.ndarray) -> TrainingHistory:
 
     model     = Sequential(linear, Sigmoid())
     criterion = BinaryCrossEntropy()
-    optimizer = Momentum(model.parameters(), lr=LR_CYCLE[0], momentum=MOM_CYCLE[0])
-    schedule  = OneCycle(LR_CYCLE, MOM_CYCLE, WARMUP_FRAC)
+    optimizer = Adam(model.parameters(), lr=LR_CYCLE[0])
+    schedule  = OneCycle(LR_CYCLE, WARMUP_FRAC)
 
     weight_hist: list[float] = []
     bias_hist:   list[float] = []
@@ -144,7 +137,7 @@ def train_and_record(x: np.ndarray, y: np.ndarray) -> TrainingHistory:
 
     print("Training model to gather history...")
     for epoch in range(EPOCHS):
-        optimizer.lr, optimizer.momentum = schedule.at(epoch / EPOCHS)
+        optimizer.lr = schedule.at(epoch / EPOCHS)
 
         weight_hist.append(linear.w.data[0, 0])
         bias_hist.append(linear.b.data[0, 0])
@@ -253,7 +246,7 @@ def animate(x: np.ndarray, y: np.ndarray, history: TrainingHistory) -> FuncAnima
     ax_path.plot([w_opt], [b_opt], marker="*", color="red", markersize=12,
                  label=f"End ({w_opt:.2f}, {b_opt:.2f})")
     path_line, = ax_path.plot([], [], color="black", marker="o", markersize=3,
-                              linewidth=1, alpha=0.7, label="Momentum Path")
+                              linewidth=1, alpha=0.7, label="Optimizer Path")
     ax_path.set_xlim(*w_range)
     ax_path.set_ylim(*b_range)
     ax_path.set_title("3. 2D Gradient Path on Cost Surface")
@@ -264,7 +257,7 @@ def animate(x: np.ndarray, y: np.ndarray, history: TrainingHistory) -> FuncAnima
     ax_surf = fig.add_subplot(235, projection="3d")
     ax_surf.plot_surface(w_grid, b_grid, z_grid, cmap="viridis", alpha=0.6, edgecolor="none")
     path_line_3d, = ax_surf.plot([], [], [], color="black", marker="o", markersize=3,
-                                 linewidth=2, label="Momentum Path")
+                                 linewidth=2, label="Optimizer Path")
     ax_surf.plot([w_opt], [b_opt], [min_cost], marker="*", color="red", markersize=12,
                  label="End")
     ax_surf.set_title("4. 3D Gradient Path")
