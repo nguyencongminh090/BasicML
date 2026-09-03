@@ -21,7 +21,7 @@ from basicml.nn.sequential  import Sequential
 from basicml.nn.linear      import Linear
 from basicml.nn.activation  import Tanh, Sigmoid
 from basicml.nn.loss        import BinaryCrossEntropy
-from basicml.optim.momentum import Momentum
+from basicml.optim.adam     import Adam
 from basicml.visualize      import plot_decision_boundary
 
 np.set_printoptions(suppress=True, precision=4)
@@ -32,8 +32,7 @@ N_SAMPLES   = 200
 NOISE       = 0.15
 
 HIDDEN_DIM  = 5
-LEARN_RATE  = 0.08
-MOMENTUM    = 0.92
+LEARN_RATE  = 0.01
 EPOCHS      = 5000
 
 GRID_LINES  = 25                       # grid lines per direction
@@ -86,7 +85,7 @@ def build_and_train(x: np.ndarray, y: np.ndarray):
 
     model     = Sequential(linear_1, activation_1, linear_2, activation_2)
     criterion = BinaryCrossEntropy()
-    optimizer = Momentum(model.parameters(), lr=LEARN_RATE, momentum=MOMENTUM)
+    optimizer = Adam(model.parameters(), lr=LEARN_RATE)
 
     cost = float("inf")
     for _ in range(EPOCHS):

@@ -4,8 +4,8 @@
 Run directly: python BasicML/examples/train_logistic.py
 
 Labels are ``1`` when ``x`` exceeds a fixed threshold. A ``Linear + Sigmoid``
-model is trained with binary cross-entropy and momentum SGD, then the fitted
-sigmoid is plotted against the data.
+model is trained with binary cross-entropy and the Adam optimizer, then the
+fitted sigmoid is plotted against the data.
 """
 import os
 import sys
@@ -16,11 +16,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import matplotlib.pyplot as plt
 
-from basicml.nn.sequential  import Sequential
-from basicml.nn.linear      import Linear
-from basicml.nn.activation  import Sigmoid
-from basicml.nn.loss        import BinaryCrossEntropy
-from basicml.optim.momentum import Momentum
+from basicml.nn.sequential import Sequential
+from basicml.nn.linear     import Linear
+from basicml.nn.activation import Sigmoid
+from basicml.nn.loss       import BinaryCrossEntropy
+from basicml.optim.adam    import Adam
 
 np.set_printoptions(suppress=True, precision=4)
 
@@ -32,11 +32,10 @@ LABEL_FRACTION = 0.25                 # label = 1 when x > lo + frac * (hi - lo)
 
 NORMALIZE      = True                 # standardizing x converges far faster
 
-LEARN_RATE     = 0.07
-MOMENTUM       = 0.95
-MAX_EPOCHS     = 20_000
-LOSS_TARGET    = 0.05                 # perfectly separable data -> loss decays like log(epoch)
-LOG_EVERY      = 2_000
+LEARN_RATE     = 0.1
+MAX_EPOCHS     = 10**9
+LOSS_TARGET    = 1e-8                 # perfectly separable data -> loss decays like log(epoch)
+LOG_EVERY      = 250
 
 SHOW_PLOT      = True
 # ----------------------------------------------------------------------
@@ -78,7 +77,7 @@ def train(x: np.ndarray, y: np.ndarray) -> tuple[Sequential, float, int]:
     """
     model     = Sequential(Linear(in_features=1, out_features=1), Sigmoid())
     criterion = BinaryCrossEntropy()
-    optimizer = Momentum(model.parameters(), lr=LEARN_RATE, momentum=MOMENTUM)
+    optimizer = Adam(model.parameters(), lr=LEARN_RATE)
 
     cost = float("inf")
     for epoch in range(1, MAX_EPOCHS + 1):

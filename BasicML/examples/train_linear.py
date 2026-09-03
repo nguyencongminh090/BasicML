@@ -3,7 +3,7 @@
 
 Run directly: python BasicML/examples/train_linear.py
 
-Fits a single :class:`Linear` layer with MSE loss and momentum SGD, then
+Fits a single :class:`Linear` layer with MSE loss and the Adam optimizer, then
 prints the learned ``f(x) = w x + b``.
 """
 import os
@@ -14,9 +14,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import pandas as pd
 
-from basicml.nn.linear     import Linear
-from basicml.nn.loss       import MSELoss
-from basicml.optim.momentum import Momentum
+from basicml.nn.linear  import Linear
+from basicml.nn.loss    import MSELoss
+from basicml.optim.adam import Adam
 
 np.set_printoptions(suppress=True, precision=4)
 
@@ -26,9 +26,8 @@ DATA_PATH  = os.path.join(REPO_ROOT, "data.csv")
 X_COLUMNS  = ["X"]
 Y_COLUMNS  = ["Y"]
 
-EPOCHS     = 200
-LEARN_RATE = 0.01
-MOMENTUM   = 0.7
+EPOCHS     = 400
+LEARN_RATE = 0.1
 # -------------------------------------------------------------------------
 
 
@@ -50,9 +49,8 @@ def load_dataset(path: str) -> tuple[np.ndarray, np.ndarray]:
 def train(x: np.ndarray, y: np.ndarray) -> Linear:
     """Fit a linear model by minimizing mean squared error.
 
-    Runs ``EPOCHS`` full-batch steps of momentum gradient descent, driving the
-    manual backward chain ``loss.backward() -> model.backward(grad)`` and
-    printing the cost each epoch.
+    Runs ``EPOCHS`` full-batch Adam steps, driving the manual backward chain
+    ``loss.backward() -> model.backward(grad)`` and printing the cost each epoch.
 
     Args:
         x: Input features, shape ``(n_samples, n_features)``.
@@ -63,7 +61,7 @@ def train(x: np.ndarray, y: np.ndarray) -> Linear:
     """
     model     = Linear(in_features=x.shape[1], out_features=y.shape[1])
     criterion = MSELoss()
-    optimizer = Momentum(model.parameters(), lr=LEARN_RATE, momentum=MOMENTUM)
+    optimizer = Adam(model.parameters(), lr=LEARN_RATE)
 
     for epoch in range(EPOCHS):
         y_pred = model(x)

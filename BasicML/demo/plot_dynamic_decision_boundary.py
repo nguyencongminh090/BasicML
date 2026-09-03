@@ -20,7 +20,7 @@ from basicml.nn.sequential  import Sequential
 from basicml.nn.linear      import Linear
 from basicml.nn.activation  import Tanh, Sigmoid, ReLU
 from basicml.nn.loss        import BinaryCrossEntropy
-from basicml.optim.momentum import Momentum
+from basicml.optim.adam     import Adam
 
 np.set_printoptions(suppress=True, precision=4)
 
@@ -29,9 +29,8 @@ SEED           = 45
 N_SAMPLES      = 200
 NOISE          = 0.20
 
-HIDDEN_DIM     = 5
-LEARN_RATE     = 0.08
-MOMENTUM       = 0.92
+HIDDEN_DIM     = 4
+LEARN_RATE     = 0.01
 EPOCHS         = 2000
 RECORD_EVERY   = 6                      # record a history frame every N epochs
 
@@ -92,7 +91,7 @@ def train_and_record(model: Sequential, x: np.ndarray, y: np.ndarray):
         the ``0/1`` region map shaped like ``xx``.
     """
     criterion = BinaryCrossEntropy()
-    optimizer = Momentum(model.parameters(), lr=LEARN_RATE, momentum=MOMENTUM)
+    optimizer = Adam(model.parameters(), lr=LEARN_RATE)
     xx, yy, grid_points = make_grid(x)
 
     epochs_seen  : list[int]        = []

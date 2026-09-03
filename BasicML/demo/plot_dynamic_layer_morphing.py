@@ -23,7 +23,7 @@ from basicml.nn.linear      import Linear
 from basicml.nn.activation  import Sigmoid
 from basicml.nn.module      import Module
 from basicml.nn.loss        import BinaryCrossEntropy
-from basicml.optim.momentum import Momentum
+from basicml.optim.adam     import Adam
 from basicml.visualize      import plot_decision_boundary
 
 np.set_printoptions(suppress=True, precision=4)
@@ -36,8 +36,7 @@ NOISE          = 0.15
 HIDDEN_DIMS    = [16, 12, 8]           # hidden layer sizes; tweak freely
 ACTIVATION: Callable[[], Module] = Sigmoid
 INIT_TYPE      = "xavier"
-LEARN_RATE     = 0.20
-MOMENTUM       = 0.92
+LEARN_RATE     = 0.01
 EPOCHS         = 5000
 
 GRID_LINES     = 22
@@ -71,7 +70,7 @@ def build_model() -> Sequential:
 
 
 def train(model: Sequential, x: np.ndarray, y: np.ndarray) -> None:
-    """Train ``model`` in place with BCE loss and momentum SGD.
+    """Train ``model`` in place with BCE loss and the Adam optimizer.
 
     Args:
         model: The MLP to train.
@@ -79,7 +78,7 @@ def train(model: Sequential, x: np.ndarray, y: np.ndarray) -> None:
         y: Binary targets, shape ``(N_SAMPLES, 1)``.
     """
     criterion = BinaryCrossEntropy()
-    optimizer = Momentum(model.parameters(), lr=LEARN_RATE, momentum=MOMENTUM)
+    optimizer = Adam(model.parameters(), lr=LEARN_RATE)
 
     y_pred = model(x)
     for _ in range(EPOCHS):

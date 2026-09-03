@@ -39,7 +39,7 @@ from basicml.nn.linear       import Linear
 from basicml.nn.activation   import ReLU, Sigmoid
 from basicml.nn.dropout      import Dropout
 from basicml.nn.loss         import BinaryCrossEntropy
-from basicml.optim.momentum  import Momentum
+from basicml.optim.adam      import Adam
 from basicml.regularization  import L2, Regularizer
 
 np.set_printoptions(suppress=True, precision=4)
@@ -50,8 +50,7 @@ HIDDEN         = (64, 64, 64, 32)      # hidden widths -> a deep, over-parameter
 DROPOUT_P      = 0.30
 L2_LAMBDA      = 1e-3
 
-LEARN_RATE     = 0.05
-MOMENTUM       = 0.9
+LEARN_RATE     = 0.005
 EPOCHS         = 1200
 RECORD_EVERY   = 8                     # snapshot weights/grads every N epochs
 
@@ -196,8 +195,7 @@ def train_and_record(
         epoch.
     """
     criterion = BinaryCrossEntropy()
-    optimizer = Momentum(model.parameters(), lr=LEARN_RATE,
-                         regularizer=reg, momentum=MOMENTUM)
+    optimizer = Adam(model.parameters(), lr=LEARN_RATE, regularizer=reg)
     linears   = linear_layers(model)
     relus     = [layer for layer in model.layers if isinstance(layer, ReLU)]
 
