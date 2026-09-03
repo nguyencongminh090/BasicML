@@ -21,6 +21,8 @@ from matplotlib.animation import FuncAnimation
 from basicml.nn.linear  import Linear
 from basicml.nn.loss    import MSELoss
 from basicml.optim.adam import Adam
+from basicml.optim.momentum import Momentum
+from basicml.optim.sgd  import SGD
 
 np.set_printoptions(suppress=True, precision=4)
 
@@ -34,7 +36,7 @@ INIT_W      = -1.0
 INIT_B      = -2.0
 
 EPOCHS      = 400
-LEARN_RATE  = 0.7
+LEARN_RATE  = 0.005
 
 GRID_RESOLUTION = 50
 FRAME_INTERVAL  = 5                    # ms between frames
@@ -90,7 +92,7 @@ def train_and_record(x: np.ndarray, y: np.ndarray) -> TrainingHistory:
     model.b.data = np.array([[INIT_B]])
 
     criterion = MSELoss()
-    optimizer = Adam(model.parameters(), lr=LEARN_RATE)
+    optimizer = Momentum(model.parameters(), lr=LEARN_RATE)
 
     weight_hist: list[float] = []
     bias_hist:   list[float] = []
@@ -158,6 +160,25 @@ def cost_surface(x: np.ndarray, y: np.ndarray,
     return w_grid, b_grid, z_grid
 
 
+def cost_vs_weight(x: np.ndarray, y: np.ndarray, b: float,
+                   w_range: tuple[float, float]) -> tuple[np.ndarray, np.ndarray]:
+    """Evaluate the MSE cost along a weight grid with the bias held fixed.
+
+    Args:
+        x: Input features, shape ``(n_samples, 1)``.
+        y: Targets, shape ``(n_samples, 1)``.
+        b: Bias value held constant while sweeping the weight.
+        w_range: ``(min, max)`` weight range for the grid.
+
+    Returns:
+        Tuple ``(w_vals, cost_vals)``, each shaped ``(GRID_RESOLUTION,)``.
+    """
+    w_vals    = np.linspace(*w_range, GRID_RESOLUTION)
+    preds     = w_vals[:, None, None] * x + b
+    cost_vals = np.mean((preds - y) ** 2, axis=(-2, -1))
+    return w_vals, cost_vals
+
+
 def animate(x: np.ndarray, y: np.ndarray, history: TrainingHistory) -> FuncAnimation:
     """Build the 5-panel figure and animate it over the recorded history.
 
@@ -206,9 +227,12 @@ def animate(x: np.ndarray, y: np.ndarray, history: TrainingHistory) -> FuncAnima
     ax_curve.grid(True, linestyle="--", alpha=0.6)
 
     ax_costw = fig.add_subplot(233)
+    w_curve, cost_curve = cost_vs_weight(x, y, b_opt, w_range)
+    ax_costw.plot(w_curve, cost_curve, color="gray", linewidth=1.5,
+                  alpha=0.7, label=f"Cost curve (b = {b_opt:.2f})")
     costw_line, = ax_costw.plot([], [], color="purple", linewidth=2, label="Cost vs W")
-    ax_costw.set_xlim(history.weight.min() - 0.5, history.weight.max() + 0.5)
-    ax_costw.set_ylim(0, history.cost.max() * 1.1)
+    ax_costw.set_xlim(*w_range)
+    ax_costw.set_ylim(0, max(cost_curve.max(), history.cost.max()) * 1.1)
     ax_costw.set_title("5. Cost vs Weight (w)")
     ax_costw.set_xlabel("Weight (w)")
     ax_costw.set_ylabel("Cost (MSE)")
