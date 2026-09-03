@@ -171,6 +171,7 @@ Animated visualizations of training dynamics (`python BasicML/demo/<script>.py`)
 | `plot_dynamic_layer_morphing.py` | Feature space morphing through each layer of a deep MLP — points and a coordinate grid deforming until the classes separate. |
 | `plot_dynamic_mlp_graph.py` | A deep MLP as a live neuron/weight graph — per-layer weight & gradient heatmaps, gradient-flow and ReLU activation panels, plain vs Dropout+L2 side by side. |
 | `plot_dynamic_vanishing_gradient.py` | Sigmoid+Xavier vs ReLU+He deep MLP: the per-layer gradient RMS staircase and mean `f'(z)` product make the vanishing gradient visible. |
+| `plot_dynamic_minibatch_gradient.py` | Linear regression: at each epoch, the full-batch (BatchGD) gradient vs the fan of per-mini-batch gradients from the same point, with a per-batch angle panel and SGD vs Momentum paths — shows how much the descent direction swings between batches. |
 | `plot_layer_transformations.py` | Static multi-panel version of the layer-morphing demo (the banner image). |
 
 <p align="center">
