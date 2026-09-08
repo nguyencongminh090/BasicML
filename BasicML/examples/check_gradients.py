@@ -20,6 +20,7 @@ import numpy as np
 from basicml.nn.linear     import Linear
 from basicml.nn.sequential import Sequential
 from basicml.nn.activation import ReLU, Tanh, Sigmoid
+from basicml.nn.batchnorm  import BatchNorm
 from basicml.nn.module     import Module
 
 # --- CONFIG --------------------------------------------------------------
@@ -120,16 +121,25 @@ def build_cases() -> list[tuple[str, Module]]:
     """Build the list of ``(name, model)`` pairs to gradient-check.
 
     Returns:
-        A list covering a bare ``Linear``, a bias-free ``Linear``, and two
-        small MLPs mixing ReLU/Tanh/Sigmoid activations.
+        A list covering a bare ``Linear``, a bias-free ``Linear``, two small
+        MLPs mixing ReLU/Tanh/Sigmoid activations, ``BatchNorm`` on its own
+        (checks gamma/beta), and ``BatchNorm`` stacked between ``Linear``
+        layers (checks the gradient it passes upstream).
+
+    The ``Linear`` layers feeding a ``BatchNorm`` are ``bias=False``: BN
+    re-centres its input, so a preceding bias has an identically-zero
+    gradient that would only show up here as finite-difference round-off.
     """
     return [
-        ("Linear",         Linear(IN_FEATURES, 3)),
+        ("Linear",          Linear(IN_FEATURES, 3)),
         ("Linear no-bias",  Linear(IN_FEATURES, 3, bias=False)),
         ("MLP relu/tanh",   Sequential(Linear(IN_FEATURES, 6, init_type="he"), ReLU(),
                                        Linear(6, 5), Tanh(), Linear(5, 2))),
         ("MLP sigmoid",     Sequential(Linear(IN_FEATURES, 5), Sigmoid(),
                                        Linear(5, 1), Sigmoid())),
+        ("BatchNorm",       BatchNorm(IN_FEATURES)),
+        ("MLP batchnorm",   Sequential(Linear(IN_FEATURES, 6, bias=False), BatchNorm(6), Tanh(),
+                                       Linear(6, 3, bias=False), BatchNorm(3), Linear(3, 2))),
     ]
 
 
