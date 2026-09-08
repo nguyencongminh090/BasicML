@@ -100,18 +100,23 @@ class ErrorLadder:
             "dev overfitting": self.dev_overfit,
         }
 
-    def diagnosis(self) -> str:
+    def diagnosis(self, tolerance: float = 1e-9) -> str:
         """Name the single largest gap as the dominant problem to fix next.
+
+        Args:
+            tolerance: A gap this size or smaller is treated as noise. When the
+                largest gap does not exceed ``tolerance`` the ladder is reported
+                as flat rather than pointing at a rung. Set this to roughly the
+                sampling error of your smallest split (e.g. ``1 / n_dev``).
 
         Returns:
             A short verdict, e.g.
-            ``"variance (0.0810) dominates -> regularise or get more training data"``.
-            If every gap is within ``1e-9`` of zero, reports that the ladder is
-            flat.
+            ``"variance (0.0810) dominates -> regularise or get more training data"``,
+            or a "ladder is flat" message when no gap exceeds ``tolerance``.
         """
         cause, size = max(self.gaps().items(), key=lambda item: item[1])
-        if size <= 1e-9:
-            return "ladder is flat -- no rung stands out"
+        if size <= tolerance:
+            return f"ladder is flat -- every gap <= {tolerance:.4f}"
         advice = {
             "avoidable bias":  "increase model capacity / train longer",
             "variance":        "regularise or get more training data",
@@ -120,8 +125,13 @@ class ErrorLadder:
         }[cause]
         return f"{cause} ({size:.4f}) dominates -> {advice}"
 
-    def summary(self) -> str:
-        """Render the ladder, its gaps, and the diagnosis as printable lines."""
+    def summary(self, tolerance: float = 1e-9) -> str:
+        """Render the ladder, its gaps, and the diagnosis as printable lines.
+
+        Args:
+            tolerance: Forwarded to :meth:`diagnosis` -- gaps at or below this
+                size are treated as noise.
+        """
         rungs = [
             ("human",     self.human),
             ("train",     self.train),
@@ -133,7 +143,7 @@ class ErrorLadder:
         lines += [f"  {name:<16} {value:.4f}" for name, value in rungs]
         lines += ["gaps", "-" * 40]
         lines += [f"  {name:<16} {value:+.4f}" for name, value in self.gaps().items()]
-        lines += ["-" * 40, self.diagnosis()]
+        lines += ["-" * 40, self.diagnosis(tolerance)]
         return "\n".join(lines)
 
 
