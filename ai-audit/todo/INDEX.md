@@ -5,3 +5,4 @@ Read this table first — never scan individual `TODO-*.md` files unless you nee
 | ID | Status | Priority | Source | Short Description | Instruction | Updated |
 |----|--------|----------|--------|--------------------|-------------|---------|
 | TODO-0011 | in-progress | medium | user-report | Animated mini-batch vs full-batch gradient-direction demo (SGD vs Momentum) | [instructions/TODO-0011.md](../instructions/TODO-0011.md) | 2026-09-03 |
+| TODO-0016 | in-progress | medium | user-report | Train/train-dev/dev/test error-ladder model diagnostic (basicml/diagnostics/) | [instructions/TODO-0016.md](../instructions/TODO-0016.md) | 2026-09-08 |
