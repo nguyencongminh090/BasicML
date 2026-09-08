@@ -26,5 +26,8 @@ class Module(ABC):
     def __call__(self, X: ArrayLike) -> np.ndarray:
         return self.forward(X)
 
+    def __repr__(self):
+        return f"{type(self).__name__}()"
+
     def parameters(self) -> list[Tensor]:
         return []
