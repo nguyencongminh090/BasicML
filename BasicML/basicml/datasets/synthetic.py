@@ -88,3 +88,47 @@ def make_circles(
 
     indices = rng.permutation(n_samples)
     return X[indices], y[indices]
+
+
+def make_parabola_regression(
+    n_samples: int = 200,
+    x1_range: Tuple[float, float] = (-3.0, 3.0),
+    curvature: float = 1.0,
+    feature_noise: float = 0.3,
+    weights: Tuple[float, float] = (2.0, -1.0),
+    bias: float = 1.0,
+    target_noise: float = 0.5,
+    random_state: Optional[int] = None
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Generate a 2-feature linear regression dataset whose inputs scatter around a parabola.
+
+    ``x1`` is drawn uniformly from ``x1_range``; ``x2`` follows the curve
+    ``x2 = curvature * x1**2`` with Gaussian noise added, so the point cloud
+    in the ``(x1, x2)`` plane is scattered around a parabola. The regression
+    target is then a noisy linear combination of the two features:
+    ``y = weights[0] * x1 + weights[1] * x2 + bias + noise``.
+
+    Args:
+        n_samples: Total number of points generated.
+        x1_range: ``(min, max)`` range that ``x1`` is sampled uniformly from.
+        curvature: Coefficient of the ``x1**2`` term defining the parabola.
+        feature_noise: Standard deviation of Gaussian noise added to ``x2``
+            around the parabola.
+        weights: True ``(w1, w2)`` coefficients used to compute the target.
+        bias: True bias term used to compute the target.
+        target_noise: Standard deviation of Gaussian noise added to the
+            target ``y``.
+        random_state: Seed for reproducible random numbers.
+
+    Returns:
+        X: Feature array of shape (n_samples, 2), columns ``(x1, x2)``.
+        y: Target array of shape (n_samples, 1).
+    """
+    rng = np.random.RandomState(random_state)
+    x1 = rng.uniform(*x1_range, size=n_samples)
+    x2 = curvature * x1 ** 2 + rng.normal(scale=feature_noise, size=n_samples)
+
+    X = np.stack([x1, x2], axis=1)
+    y = (weights[0] * x1 + weights[1] * x2 + bias
+         + rng.normal(scale=target_noise, size=n_samples))
+    return X, y.reshape(-1, 1)
