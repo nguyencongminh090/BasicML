@@ -54,3 +54,7 @@ class Linear(Module):
         if self.b is not None:
             self.b.grad += np.sum(grad_output, axis=0, keepdims=True)
         return grad_output @ self.w.data.T
+
+    def __repr__(self):
+        return f"Linear(in_features={self.in_features}, out_features={self.out_features}, " \
+               f"bias={self.use_bias}, init_type={self.init_type!r})"

@@ -40,3 +40,12 @@ class Sequential(Module):
     def __repr__(self):
         inner = ",\n  ".join(repr(layer) for layer in self.layers)
         return f"Sequential(\n  {inner}\n)"
+
+    def __len__(self) -> int:
+        return len(self.layers)
+
+    def __getitem__(self, index: int) -> Module:
+        return self.layers[index]
+
+    def __iter__(self):
+        return iter(self.layers)

@@ -78,6 +78,9 @@ class LeakyReLU(Activation):
         local = np.where(self.x > 0, 1.0, self.negative_slope)
         return grad_output * local
 
+    def __repr__(self):
+        return f"LeakyReLU(negative_slope={self.negative_slope})"
+
 
 class PReLU(Activation):
     def __init__(self, num_parameters: int = 1, init: float = 0.25):
@@ -112,6 +115,9 @@ class PReLU(Activation):
         local = np.where(self.x > 0, 1.0, self.a.data)
         return grad_output * local
 
+    def __repr__(self):
+        return f"PReLU(num_parameters={self.num_parameters})"
+
 
 class ELU(Activation):
     def __init__(self, alpha: float = 1.0):
@@ -128,6 +134,9 @@ class ELU(Activation):
             raise RuntimeError("backward called before forward pass")
         local = np.where(self.x > 0, 1.0, self.alpha * np.exp(self.x))
         return grad_output * local
+
+    def __repr__(self):
+        return f"ELU(alpha={self.alpha})"
 
 
 class SELU(Activation):
@@ -206,6 +215,9 @@ class Swish(Activation):
         local = self.sig + self.beta * self.x * self.sig * (1 - self.sig)
         return grad_output * local
 
+    def __repr__(self):
+        return f"Swish(beta={self.beta})"
+
 
 class Mish(Activation):
     def __init__(self):
@@ -245,6 +257,9 @@ class Hardtanh(Activation):
         mask = (self.x > self.min_val) & (self.x < self.max_val)
         return grad_output * mask
 
+    def __repr__(self):
+        return f"Hardtanh(min_val={self.min_val}, max_val={self.max_val})"
+
 
 class Hardsigmoid(Activation):
     def __init__(self):
@@ -280,3 +295,6 @@ class Softmax(Activation):
             raise RuntimeError("backward called before forward pass")
         dot = np.sum(grad_output * self.out, axis=self.axis, keepdims=True)
         return self.out * (grad_output - dot)
+
+    def __repr__(self):
+        return f"Softmax(axis={self.axis})"
