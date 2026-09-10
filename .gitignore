@@ -7,6 +7,9 @@ __pycache__/
 .agents/
 .gemini/
 
+# CodeGraph local index
+.codegraph/
+
 # AI audit: conversation index is machine/session-local (points at Claude Code's
 # own native session transcripts under ~/.claude/projects/, which aren't portable)
 ai-audit/convo/

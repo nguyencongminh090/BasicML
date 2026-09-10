@@ -5,4 +5,4 @@ Read this table first — never scan individual `TODO-*.md` files unless you nee
 | ID | Status | Priority | Source | Short Description | Instruction | Updated |
 |----|--------|----------|--------|--------------------|-------------|---------|
 | TODO-0011 | in-progress | medium | user-report | Animated mini-batch vs full-batch gradient-direction demo (SGD vs Momentum) | [instructions/TODO-0011.md](../instructions/TODO-0011.md) | 2026-09-03 |
-| TODO-0017 | in-progress | medium | user-report | PyTorch-style per-epoch training progress display (loss + basicml.metrics) in basicml/visualize/ | [instructions/TODO-0017.md](../instructions/TODO-0017.md) | 2026-09-08 |
+| TODO-0018 | in-progress | medium | user-report | CNN building blocks: Conv2D, pooling (Max/Avg/Global), Flatten, CNNModel + example | [instructions/TODO-0018.md](../instructions/TODO-0018.md) | 2026-09-11 |
