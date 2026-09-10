@@ -14,9 +14,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import pandas as pd
 
-from basicml.nn.linear  import Linear
-from basicml.nn.loss    import MSELoss
-from basicml.optim.adam import Adam
+from basicml.nn.linear   import Linear
+from basicml.nn.loss     import MSELoss
+from basicml.optim.adam  import Adam
+from basicml.metrics     import MeanAbsoluteError, RootMeanSquaredError, R2Score
+from basicml.visualize   import ProgressPrinter
 
 np.set_printoptions(suppress=True, precision=4)
 
@@ -50,7 +52,8 @@ def train(x: np.ndarray, y: np.ndarray) -> Linear:
     """Fit a linear model by minimizing mean squared error.
 
     Runs ``EPOCHS`` full-batch Adam steps, driving the manual backward chain
-    ``loss.backward() -> model.backward(grad)`` and printing the cost each epoch.
+    ``loss.backward() -> model.backward(grad)`` and printing loss plus MAE, RMSE
+    and R2 each epoch via :class:`~basicml.visualize.ProgressPrinter`.
 
     Args:
         x: Input features, shape ``(n_samples, n_features)``.
@@ -62,8 +65,13 @@ def train(x: np.ndarray, y: np.ndarray) -> Linear:
     model     = Linear(in_features=x.shape[1], out_features=y.shape[1])
     criterion = MSELoss()
     optimizer = Adam(model.parameters(), lr=LEARN_RATE)
+    progress  = ProgressPrinter({
+        "mae":  MeanAbsoluteError(),
+        "rmse": RootMeanSquaredError(),
+        "r2":   R2Score(),
+    }, every=20)
 
-    for epoch in range(EPOCHS):
+    for epoch in range(1, EPOCHS + 1):
         y_pred = model(x)
         cost   = criterion(y_pred, y)
 
@@ -71,7 +79,8 @@ def train(x: np.ndarray, y: np.ndarray) -> Linear:
         optimizer.step()
         optimizer.zero_grad()
 
-        print(f"EPOCH: {epoch:4d} | COST: {cost:.6f}")
+        progress.update(y_pred, y, cost)
+        progress.end_epoch(epoch, EPOCHS)
 
     return model
 
