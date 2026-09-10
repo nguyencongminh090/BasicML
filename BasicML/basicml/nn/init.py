@@ -9,8 +9,12 @@ def _as_array(tensor: Tensor | np.ndarray) -> np.ndarray:
 def _fan_in_out(shape: tuple[int, ...]) -> tuple[int, int]:
     if len(shape) < 2:
         fan_in = fan_out = int(np.prod(shape))
-    else:
+    elif len(shape) == 2:
         fan_in, fan_out = shape[0], shape[1]
+    else:
+        receptive_field = int(np.prod(shape[2:]))
+        fan_in          = shape[1] * receptive_field
+        fan_out         = shape[0] * receptive_field
     return fan_in, fan_out
 
 
