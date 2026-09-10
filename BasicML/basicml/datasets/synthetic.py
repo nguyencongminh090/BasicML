@@ -132,3 +132,51 @@ def make_parabola_regression(
     y = (weights[0] * x1 + weights[1] * x2 + bias
          + rng.normal(scale=target_noise, size=n_samples))
     return X, y.reshape(-1, 1)
+
+
+def make_blob_images(
+    n_samples: int = 240,
+    size: int = 12,
+    blob_sigma: float = 2.0,
+    noise: float = 0.15,
+    random_state: Optional[int] = None
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Generate a tiny binary image dataset: one Gaussian blob per image.
+
+    Each image is a single-channel ``size x size`` grid holding one bright
+    Gaussian bump plus additive noise. Class ``0`` places the bump in the
+    top-left quadrant, class ``1`` in the bottom-right quadrant, so the label
+    depends on *where* the activation is, not on any single pixel -- a small
+    task that a convolution followed by pooling can solve but a bare linear
+    model on raw pixels struggles with.
+
+    Args:
+        n_samples: Total number of images generated; split as evenly as
+            possible between the two classes.
+        size: Height and width of each square image in pixels.
+        blob_sigma: Standard deviation, in pixels, of the Gaussian bump.
+        noise: Standard deviation of the per-pixel Gaussian noise added on top
+            of the bump.
+        random_state: Seed for reproducible random numbers.
+
+    Returns:
+        X: Image array of shape (n_samples, 1, size, size), float64.
+        y: Binary label array of shape (n_samples, 1).
+    """
+    rng      = np.random.RandomState(random_state)
+    n_class1 = n_samples // 2
+    n_class0 = n_samples - n_class1
+    labels   = np.concatenate([np.zeros(n_class0, dtype=int), np.ones(n_class1, dtype=int)])
+
+    rows, cols = np.mgrid[0:size, 0:size]
+    quarter    = size / 4.0
+    centers    = np.where(labels[:, None] == 0, quarter, 3.0 * quarter)
+
+    images = np.empty((n_samples, 1, size, size), dtype=np.float64)
+    for k in range(n_samples):
+        cy, cx        = centers[k], centers[k]
+        bump          = np.exp(-((rows - cy) ** 2 + (cols - cx) ** 2) / (2.0 * blob_sigma ** 2))
+        images[k, 0]  = bump + rng.normal(scale=noise, size=(size, size))
+
+    indices = rng.permutation(n_samples)
+    return images[indices], labels[indices].reshape(-1, 1)
