@@ -13,6 +13,9 @@ axis. The point is to see the qualitative differences:
     the step size adapts without vanishing.
   - Adam / AdamW -- RMSProp + momentum with bias correction; AdamW adds
     decoupled weight decay.
+  - Muon -- momentum update orthogonalized via Newton-Schulz iteration for
+    2D+ parameters (weight matrices); 1D parameters (biases) fall back to
+    plain momentum since orthogonalization is undefined for vectors.
 
 Mini-batching: each epoch iterates over shuffled batches (see
 basicml.datasets.iter_minibatches), one optimizer step per batch.
@@ -43,6 +46,7 @@ from basicml.optim.rmsprop   import RMSProp
 from basicml.optim.adadelta  import Adadelta
 from basicml.optim.adam      import Adam
 from basicml.optim.adamw     import AdamW
+from basicml.optim.muon      import Muon
 
 np.set_printoptions(suppress=True, precision=4)
 
@@ -68,6 +72,7 @@ OPTIMIZERS: dict[str, Callable[[list], Optimizer]] = {
     "Adadelta": lambda p: Adadelta(p, lr=1.0,  rho=0.95),
     "Adam":     lambda p: Adam(p,     lr=0.01),
     "AdamW":    lambda p: AdamW(p,    lr=0.01, weight_decay=0.01),
+    "Muon":     lambda p: Muon(p,     lr=0.02, momentum=0.95),
 }
 
 
