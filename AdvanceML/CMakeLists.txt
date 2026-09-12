@@ -14,6 +14,9 @@ option(ADVANCEML_BUILD_TESTS "Build the Catch2 test suite" ON)
 
 add_library(advanceml
     src/version.cpp
+    src/tensor.cpp
+    src/ops.cpp
+    src/optim.cpp
 )
 target_include_directories(advanceml PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
