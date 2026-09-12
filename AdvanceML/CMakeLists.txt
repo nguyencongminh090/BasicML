@@ -16,7 +16,13 @@ add_library(advanceml
     src/version.cpp
     src/tensor.cpp
     src/ops.cpp
-    src/optim.cpp
+    src/nn/module.cpp
+    src/nn/linear.cpp
+    src/nn/relu.cpp
+    src/nn/sequential.cpp
+    src/nn/loss.cpp
+    src/optim/optimizer.cpp
+    src/optim/sgd.cpp
 )
 target_include_directories(advanceml PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

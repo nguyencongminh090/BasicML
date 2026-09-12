@@ -10,6 +10,7 @@ list(APPEND CMAKE_MODULE_PATH "${catch2_SOURCE_DIR}/extras")
 add_executable(advanceml_tests
     smoke_test.cpp
     autograd_test.cpp
+    nn_test.cpp
 )
 target_link_libraries(advanceml_tests PRIVATE advanceml Catch2::Catch2WithMain)
 
