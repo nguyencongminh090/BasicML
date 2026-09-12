@@ -23,3 +23,7 @@ env/
 # IDE files
 .vscode/
 .idea/
+
+# AdvanceML: CMake build output
+AdvanceML/build/
+compile_commands.json

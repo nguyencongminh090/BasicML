@@ -4,9 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-A from-scratch deep learning learning project (`BasicML/`). The goal is understanding, not production use: every algorithm is implemented in pure NumPy, favoring clarity over performance, with no autograd — gradients are computed by hand in each module's `backward()`. The repo is being internationalized to English: code, identifiers, comments, and docstrings are English-only, and existing Vietnamese comments/docs are being migrated (see `ai-audit` TODO-0007). Historical commit messages and older `BasicML/logs/` entries stay as written.
+This repo hosts two sibling deep-learning projects with different goals — do not conflate their rules:
 
-## Commands
+- **`BasicML/`** — a from-scratch deep learning *learning* project. The goal is understanding, not production use: every algorithm is implemented in pure NumPy, favoring clarity over performance, with no autograd — gradients are computed by hand in each module's `backward()`. The repo is being internationalized to English: code, identifiers, comments, and docstrings are English-only, and existing Vietnamese comments/docs are being migrated (see `ai-audit` TODO-0007). Historical commit messages and older `BasicML/logs/` entries stay as written.
+- **`AdvanceML/`** — a from-scratch, performance-focused C++ deep learning project with a real autograd engine, for workloads BasicML's pure-NumPy/manual-backward design can't handle efficiently on CPU (CNN/Transformer scale). See the dedicated [AdvanceML](#advanceml) section below. It does not replace BasicML — BasicML keeps its teaching purpose unchanged.
+
+## BasicML — Commands
 
 There is no build system, test suite, or package manager beyond `pip install numpy pandas matplotlib`. Python >= 3.13 is required. `scikit-learn` is an additional dependency (`pip install scikit-learn`), used only as a real-dataset fetcher (`sklearn.datasets.fetch_openml`) for the MNIST-based demos/examples below — no `sklearn` estimators/training code are used anywhere in the repo, keeping the "algorithms implemented from scratch" rule intact.
 
@@ -35,7 +38,7 @@ pyrefly check
 
 There are no automated tests in the repo.
 
-## Architecture
+## BasicML — Architecture
 
 `BasicML/basicml/` is a small PyTorch-inspired library with a strict separation between tensors, modules, losses, and optimizers — but **backward passes are manual**, not autograd-traced. Every `forward()` caches whatever it needs (`self.x`, `self.out`, ...) so the corresponding `backward(grad_output)` can compute local gradients and return the upstream gradient. Callers are responsible for driving the chain: `loss.backward()` → `model.backward(grad)`, propagating through each layer's own `backward()` in reverse order (see `models.LogisticRegressionModel.backward`, which manually chains `sigmoid.backward` into `linear.backward`).
 
@@ -49,7 +52,7 @@ Key pieces:
 
 Standard training loop shape used throughout examples/demos: `forward → loss(y_pred, y) → loss.backward() → model.backward(grad) → optimizer.step() → optimizer.zero_grad()`.
 
-## Repo-specific conventions
+## BasicML — Repo-specific conventions
 
 - Imports are column-aligned (see any file under `basicml/`) — match this style when editing existing files.
 - When editing `README.md` or other Markdown containing LaTeX math: use block math (`$$...$$`) rather than inline math for anything with superscripts/subscripts/sums, and always surround `$$` blocks with blank lines (including when breaking out of a list) — the Markdown/KaTeX renderer used here otherwise fails to trigger or merges text.
@@ -57,7 +60,7 @@ Standard training loop shape used throughout examples/demos: `forward → loss(y
 - `.agents/` (gitignored) is a duplicate copy of the same skills for other agent tools (e.g. Copilot, Antigravity) that read that convention instead — keep the two in sync manually if a skill changes.
 - `ai-audit/` (repo root) is the audit trail and TODO backlog for AI-assisted work on this repo — timestamped fix-log entries, a TODO backlog, per-TODO instruction notes from chat sessions, and a conversation index. See `ai-audit/README.md` for the full schema; the `ai-audit` skill has the operating fast-paths. **Always read a folder's `INDEX.md` before opening individual item files** — the backlog is designed to survive 100+ items without an agent having to scan the whole tree. `ai-audit/convo/` is gitignored: it indexes conversations by pointing at Claude Code's own native session transcripts (ground truth, no rewrite) rather than requiring a regenerated summary.
 
-## Code style
+## BasicML — Code style
 
 - **English only in code.** Identifiers, comments, docstrings, and developer-facing string literals are English. No Vietnamese in `.py` files.
 - **The core library modules stay bare — no `#` comments, no docstrings.** Every file directly under `BasicML/basicml/` (`nn/`, `optim/`, `tensor.py`, …) carries *zero* `#` comments and *zero* docstrings on its classes, methods, and functions: the code, type hints, and clear names are the whole story. If a line needs a comment to be understood, rename it or extract a helper. Keep the `raise RuntimeError("backward called before forward pass")` guards — they are behaviour, not documentation.
@@ -75,6 +78,36 @@ Standard training loop shape used throughout examples/demos: `forward → loss(y
   - *Interface segregation* — keep base classes minimal; do not force layers to implement what they do not need.
   - *Dependency inversion* — depend on the `Module` / `Loss` / `Optimizer` abstractions, not concrete classes (e.g. a training loop takes a `Module`, not a `Linear`).
 
+## AdvanceML
+
+`AdvanceML/` is a from-scratch, performance-oriented deep learning project in modern C++ (C++20/23), with a **real autograd engine** — a define-by-run computation graph and `.backward()` that traces ops automatically, unlike BasicML's hand-written `backward()` methods. It exists because BasicML's pure-NumPy design cannot exploit this machine's hardware efficiently at CNN/Transformer scale. AdvanceML does not aim to out-perform hand-tuned BLAS/oneDNN kernels themselves (unrealistic for a from-scratch project); the realistic goal is to match or beat frameworks like PyTorch on small/medium CPU models by cutting interpreter/dispatch overhead around the same underlying kernels — see `ai-audit/instructions/TODO-0030.md` for the full reasoning.
+
+### AdvanceML — Commands
+
+Build system is CMake + Ninja. From the repo root:
+
+```bash
+cmake -B AdvanceML/build -S AdvanceML -G Ninja
+cmake --build AdvanceML/build
+ctest --test-dir AdvanceML/build
+```
+
+Requires: a C++20/23 compiler (developed against g++ 15), CMake, Ninja, and oneDNN development headers (`libdnnl-dev` on Debian/Ubuntu — install before configuring if `find_package(dnnl)` fails). Catch2 is fetched automatically via CMake `FetchContent`, nothing to install manually for tests.
+
+### AdvanceML — Architecture
+
+- **Kernel backend: Intel oneDNN.** GEMM/conv-heavy ops call into oneDNN (which targets this CPU's AVX-512 VNNI) rather than hand-rolled kernels — oneDNN is wrapped behind an internal interface so the backend stays swappable, but "from scratch" in this project means the autograd engine and training loop, not the low-level kernels.
+- **Autograd, not manual backward.** Unlike BasicML, tensor operations build a computation graph as they execute (define-by-run); `.backward()` walks it via the chain rule automatically. Do not hand-write per-layer `backward()` methods here — that pattern belongs to BasicML only.
+- Directory layout: `AdvanceML/include/advanceml/` (public headers), `AdvanceML/src/` (implementation, mirrors `include/`), `AdvanceML/tests/` (Catch2 tests, mirrors `src/`).
+
+### AdvanceML — Code style
+
+- Modern C++ (C++20/23): RAII, `std::unique_ptr`/`std::shared_ptr` over raw owning pointers, `<concepts>`/templates over macro-based generics, `constexpr` where it clarifies intent.
+- Google-style Doxygen-compatible comments (`/** ... */`) on every public header declaration — this is a "library edge" package in the same sense as BasicML's `datasets/`/`visualize/`, so it gets full docstrings: what the function computes (state the math where useful — this is still a teaching-adjacent project), `@param`, `@return`, `@throws`.
+- `.cpp` implementation files may use sparse `why`-comments (never `what`-comments), matching BasicML's `examples/`/`demo/` convention.
+- English only, same as the rest of the repo.
+- SOLID applies the same way it does to BasicML's `Module`/`Loss`/`Optimizer` abstractions — depend on abstract interfaces (e.g. a `Backend` interface wrapping oneDNN), add new ops as new classes rather than branching inside existing ones.
+
 ## AI audit — mandatory triggers
 
 - **Modify Task (any edit to user code/config/docs).** Whenever you change a file the user owns — not just AI-authored files — you MUST run the `ai-audit` skill and record it: append a dated entry to the relevant `ai-audit/instructions/TODO-XXXX.md` while working, and file a fix-log entry (`ai-audit/fix-log/`) once the change is applied. Trivial, no-op, or purely generated-artifact changes still get a fix-log row. Do not consider a code modification finished until its audit trail exists.
@@ -86,7 +119,7 @@ Two long-lived branches: `main` (protected — releases only) and `dev` (integra
 
 - **Features** — branch `feature/TODO-XXXX-<short-name>` from `dev`, named after the `ai-audit` TODO it's pulling. Merge back into `dev` only, never straight to `main`.
 - **Fixes** — branch `fix/TODO-XXXX-<short-name>` from `dev` (its own branch, never committed straight onto `dev` or `main`). Merge back into `dev`.
-- **Kanban WIP limit**: at most 2 TODOs `in-progress` at once (see `ai-audit/README.md`) — a `feature/*`/`fix/*` branch is only created if the WIP cap allows it.
+- **Kanban WIP limit**: at most 2 TODOs `in-progress` at once (see `ai-audit/README.md`) — a `feature/*`/`fix/*` branch is only created if the WIP cap allows it. Exceptions require the user's explicit sign-off and must be noted in the TODO's instructions file (e.g. `ai-audit/instructions/TODO-0030.md`).
 - **`main` is protected**: never commit, push, or merge to it directly. The only thing that reaches `main` is a PR from `dev`. This is enforced both behaviorally and on GitHub (branch protection on `main`: PR required, no force-push, no deletion; admin override left enabled for emergencies).
 - **Promoting `dev` → `main`**: once the changes on `dev` are verified — `pyrefly check` plus running whichever `BasicML/examples/`/`BasicML/demo/` scripts exercise the change (there's no automated test suite yet, so this is "tests pass" for now) — ask the user before opening the PR. Never merge `dev` into `main` unassisted, even if verification is clean.
 - The `commit-task` skill (triggered by `/make-commit` or "MAKE COMMIT") enforces the feature/fix branch-placement half of this policy at commit time — classifying the change and routing it to the right branch before handing off to `git-commit`.

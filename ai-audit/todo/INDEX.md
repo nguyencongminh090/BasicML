@@ -6,3 +6,4 @@ Read this table first — never scan individual `TODO-*.md` files unless you nee
 |----|--------|----------|--------|--------------------|-------------|---------|
 | TODO-0011 | in-progress | medium | user-report | Animated mini-batch vs full-batch gradient-direction demo (SGD vs Momentum) | [instructions/TODO-0011.md](../instructions/TODO-0011.md) | 2026-09-03 |
 | TODO-0024 | in-progress | medium | user-report | Muon optimizer — momentum + Newton-Schulz orthogonalized update for 2D+ params, wired into optimizer comparison example | [instructions/TODO-0024.md](../instructions/TODO-0024.md) | 2026-09-11 |
+| TODO-0030 | in-progress | high | user-report | AdvanceML: new C++ autograd engine project (oneDNN-backed, AVX-512 VNNI) — this TODO covers project scaffold only; WIP-cap exception (see instructions) | [instructions/TODO-0030.md](../instructions/TODO-0030.md) | 2026-09-12 |
