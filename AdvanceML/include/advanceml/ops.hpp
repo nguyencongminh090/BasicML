@@ -30,4 +30,35 @@ Tensor relu(const Tensor& x);
  */
 Tensor mse_loss(const Tensor& pred, const Tensor& target);
 
+/**
+ * Logistic sigmoid, elementwise: `sigmoid(x) = 1 / (1 + exp(-x))`.
+ * Backward: `dL/dx = dL/dy * y * (1 - y)`, reusing the forward output `y`.
+ */
+Tensor sigmoid(const Tensor& x);
+
+/**
+ * Leaky rectified linear unit, elementwise:
+ * `leaky_relu(x) = x` where `x > 0`, else `negative_slope * x`.
+ * Backward: `dL/dx = dL/dy` where `x > 0`, else `negative_slope * dL/dy`.
+ */
+Tensor leaky_relu(const Tensor& x, float negative_slope = 0.01f);
+
+/**
+ * Gaussian Error Linear Unit, elementwise, exact (erf-based) form:
+ * `gelu(x) = x * 0.5 * (1 + erf(x / sqrt(2)))`.
+ * Backward: `dL/dx = dL/dy * (0.5 * (1 + erf(x / sqrt(2))) + x * phi(x))`,
+ * where `phi` is the standard normal density.
+ */
+Tensor gelu(const Tensor& x);
+
+/**
+ * Softmax over the last axis: for a 1D tensor, over the whole vector; for a
+ * 2D `(N, D)` tensor, independently per row. `softmax(x)_i = exp(x_i) /
+ * sum_j(exp(x_j))`, computed with a max-subtraction for numerical stability.
+ * Backward (per row): `dL/dx_i = y_i * (dL/dy_i - sum_j(dL/dy_j * y_j))`.
+ *
+ * @throws std::runtime_error if `x` is neither 1D nor 2D.
+ */
+Tensor softmax(const Tensor& x);
+
 }  // namespace advanceml

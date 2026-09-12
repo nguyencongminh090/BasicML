@@ -19,6 +19,10 @@ add_library(advanceml
     src/nn/module.cpp
     src/nn/linear.cpp
     src/nn/relu.cpp
+    src/nn/sigmoid.cpp
+    src/nn/leaky_relu.cpp
+    src/nn/gelu.cpp
+    src/nn/softmax.cpp
     src/nn/sequential.cpp
     src/nn/loss.cpp
     src/optim/optimizer.cpp
