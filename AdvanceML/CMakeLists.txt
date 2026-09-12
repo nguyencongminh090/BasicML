@@ -27,6 +27,9 @@ add_library(advanceml
     src/nn/loss.cpp
     src/optim/optimizer.cpp
     src/optim/sgd.cpp
+    src/optim/momentum.cpp
+    src/optim/adam.cpp
+    src/optim/adamw.cpp
 )
 target_include_directories(advanceml PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
