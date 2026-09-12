@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "advanceml/ops.hpp"
-#include "advanceml/optim.hpp"
+#include "advanceml/optim/sgd.hpp"
 #include "advanceml/tensor.hpp"
 
 using namespace advanceml;
