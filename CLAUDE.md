@@ -8,7 +8,7 @@ A from-scratch deep learning learning project (`BasicML/`). The goal is understa
 
 ## Commands
 
-There is no build system, test suite, or package manager beyond `pip install numpy pandas matplotlib`. Python >= 3.13 is required.
+There is no build system, test suite, or package manager beyond `pip install numpy pandas matplotlib`. Python >= 3.13 is required. `scikit-learn` is an additional dependency (`pip install scikit-learn`), used only as a real-dataset fetcher (`sklearn.datasets.fetch_openml`) for the MNIST-based demos/examples below — no `sklearn` estimators/training code are used anywhere in the repo, keeping the "algorithms implemented from scratch" rule intact.
 
 Run an example end-to-end (each script self-inserts `BasicML/` onto `sys.path`, so run directly with `python`, not `-m`):
 
@@ -18,6 +18,13 @@ python BasicML/examples/train_logistic.py    # Logistic regression on synthetic 
 python BasicML/demo/plot_dynamic_linear.py   # Animated training visualization
 python BasicML/demo/plot_dynamic_logistic.py
 python BasicML/demo/plot_dynamic_3d_logistic.py
+python BasicML/demo/plot_dynamic_cnn_feature_maps.py   # Trains a small CNN on real MNIST (needs scikit-learn), animates feature-map evolution
+python BasicML/demo/plot_dynamic_lenet_feature_maps.py # Same idea, LeNet-shaped model (6/16 conv channels, 120/84 FC)
+python BasicML/demo/plot_dynamic_alexnet_feature_maps.py # Same idea, scaled-down AlexNet-shaped model (5 conv layers, Dropout FC); slower (~4-5 min)
+python BasicML/examples/train_cnn_mnist.py              # Efficient CNN (BatchNorm2D + GlobalAvgPool2D) + AdamW, real MNIST train/test split, reports held-out test accuracy (~10 min)
+python BasicML/examples/train_lenet_adamw.py             # LeNet-shaped CNN + AdamW only; hyperparameters in examples/lenet_config.py::LeNetConfig
+python BasicML/examples/train_lenet_adamw.py --config BasicML/examples/lenet_best.cfg   # Train from a .cfg file written by tune_lenet_adamw.py
+python BasicML/examples/tune_lenet_adamw.py              # Random (default) or grid search over lr/weight_decay/kernel sizes; writes the winner to lenet_best.cfg, does not train it
 ```
 
 Type checking (config at `pyrefly.toml`, search path `BasicML`, interpreter `/usr/bin/python3.13`):
