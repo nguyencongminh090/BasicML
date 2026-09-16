@@ -1,6 +1,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <vector>
@@ -57,6 +58,26 @@ void check_activation_gradient(const std::function<Tensor(const Tensor&)>& activ
     }
 }
 
+void check_loss_gradient(const std::function<Tensor(const Tensor&, const Tensor&)>& loss_fn, Tensor pred,
+                          const Tensor& target) {
+    constexpr float eps = 1e-3f;
+    constexpr float tolerance = 5e-2f;
+
+    Tensor loss = loss_fn(pred, target);
+    loss.backward();
+
+    REQUIRE(pred.has_grad());
+    Tensor grad = pred.grad();
+
+    auto scalar_loss = [&]() { return loss_fn(pred, target).data()[0]; };
+
+    for (size_t i = 0; i < pred.numel(); ++i) {
+        const float analytic = grad.data()[i];
+        const float numeric = numerical_grad(pred.data()[i], scalar_loss, eps);
+        REQUIRE(analytic == Catch::Approx(numeric).margin(tolerance));
+    }
+}
+
 }  // namespace
 
 TEST_CASE("Sigmoid::forward matches the sigmoid op and its numerical gradient", "[nn][activation]") {
@@ -88,6 +109,56 @@ TEST_CASE("Softmax::forward sums to 1 per row and matches its numerical gradient
         REQUIRE(row_sum == Catch::Approx(1.0f).margin(1e-4f));
     }
     check_activation_gradient([](const Tensor& t) { return Softmax().forward(t); }, x);
+}
+
+TEST_CASE("CrossEntropyLoss matches a manual computation and its numerical gradient", "[nn][loss]") {
+    const std::vector<float> probs = {0.7f, 0.2f, 0.1f, 0.1f, 0.2f, 0.7f};
+    const std::vector<float> one_hot = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+    Tensor pred(probs, {2, 3}, /*requires_grad=*/true);
+    Tensor target(one_hot, {2, 3});
+
+    CrossEntropyLoss loss_fn;
+    Tensor loss = loss_fn(pred, target);
+
+    const float expected = -0.5f * (std::log(0.7f) + std::log(0.7f));
+    REQUIRE(loss.data()[0] == Catch::Approx(expected).margin(1e-5f));
+
+    check_loss_gradient([](const Tensor& p, const Tensor& t) { return CrossEntropyLoss()(p, t); }, pred, target);
+}
+
+TEST_CASE("Sequential/Softmax/CrossEntropyLoss/SGD decrease loss on a 3-class linearly separable task",
+          "[nn][training]") {
+    // One-hot-encoded points clustered near each axis of a 2D simplex-like
+    // layout, one class per cluster -- deliberately linearly separable so a
+    // single Linear layer plus Softmax/CrossEntropyLoss should fit it.
+    const std::vector<float> inputs = {
+        2.0f, 0.0f, 1.8f, 0.3f, 0.0f, 2.0f, 0.3f, 1.8f, -2.0f, 0.0f, -1.8f, -0.3f,
+    };
+    const std::vector<float> one_hot_targets = {
+        1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+    };
+    Tensor x(inputs, {6, 2});
+    Tensor target(one_hot_targets, {6, 3});
+
+    Sequential model({std::make_shared<Linear>(2, 3, /*seed=*/30)});
+    Softmax softmax;
+    CrossEntropyLoss loss_fn;
+    SGD optimizer(model.parameters(), /*learning_rate=*/0.5f);
+
+    auto forward_loss = [&]() { return loss_fn(softmax.forward(model.forward(x)), target); };
+
+    const float initial_loss = forward_loss().data()[0];
+
+    float final_loss = initial_loss;
+    for (int epoch = 0; epoch < 200; ++epoch) {
+        Tensor loss = forward_loss();
+        loss.backward();
+        optimizer.step();
+        optimizer.zero_grad();
+        final_loss = loss.data()[0];
+    }
+
+    REQUIRE(final_loss < initial_loss * 0.2f);
 }
 
 TEST_CASE("Sequential/Linear/ReLU/MSELoss/SGD reproduce the raw-op XOR MLP's loss-decrease result", "[nn][training]") {

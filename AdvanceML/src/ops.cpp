@@ -309,4 +309,50 @@ Tensor softmax(const Tensor& x) {
     return Tensor::from_impl(std::move(out_impl));
 }
 
+Tensor cross_entropy_loss(const Tensor& pred, const Tensor& target) {
+    if (pred.shape() != target.shape()) {
+        throw std::runtime_error("cross_entropy_loss: pred and target shapes must match");
+    }
+    if (pred.shape().size() != 1 && pred.shape().size() != 2) {
+        throw std::runtime_error("cross_entropy_loss: expected a 1D or 2D tensor");
+    }
+    constexpr float kEpsilon = 1e-15f;
+    const size_t n = pred.shape().size() == 2 ? pred.shape()[0] : 1;
+    const size_t numel = pred.numel();
+
+    float sum = 0.0f;
+    for (size_t i = 0; i < numel; ++i) {
+        const float clipped = std::clamp(pred.data()[i], kEpsilon, 1.0f - kEpsilon);
+        sum += target.data()[i] * std::log(clipped);
+    }
+    const float loss_value = -sum / static_cast<float>(n);
+
+    auto out_impl = std::make_shared<TensorImpl>();
+    out_impl->data = {loss_value};
+    out_impl->shape = {1};
+    out_impl->requires_grad = pred.requires_grad() || target.requires_grad();
+
+    if (out_impl->requires_grad) {
+        auto node = std::make_shared<Node>();
+        node->inputs = {pred.impl(), target.impl()};
+        Tensor pred_copy = pred;
+        Tensor target_copy = target;
+        node->backward_fn = [pred_copy, target_copy, n, numel](const Tensor& grad_output) -> std::vector<Tensor> {
+            constexpr float kEpsilon = 1e-15f;
+            const float upstream = grad_output.data()[0];
+            std::vector<float> grad_pred(numel);
+            std::vector<float> grad_target(numel);
+            for (size_t i = 0; i < numel; ++i) {
+                const float clipped = std::clamp(pred_copy.data()[i], kEpsilon, 1.0f - kEpsilon);
+                grad_pred[i] = -upstream * target_copy.data()[i] / (clipped * static_cast<float>(n));
+                grad_target[i] = -upstream * std::log(clipped) / static_cast<float>(n);
+            }
+            return {Tensor(std::move(grad_pred), pred_copy.shape()), Tensor(std::move(grad_target), target_copy.shape())};
+        };
+        out_impl->grad_fn = std::move(node);
+    }
+
+    return Tensor::from_impl(std::move(out_impl));
+}
+
 }  // namespace advanceml

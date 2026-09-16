@@ -61,4 +61,19 @@ Tensor gelu(const Tensor& x);
  */
 Tensor softmax(const Tensor& x);
 
+/**
+ * Cross-entropy loss for already-normalized probabilities, matching
+ * `basicml.nn.loss.CrossEntropyLoss`'s contract: unlike a fused
+ * softmax-cross-entropy, `pred` is expected to already be a probability
+ * distribution per row (e.g. the output of `softmax`), and `target` a
+ * one-hot (or otherwise normalized) distribution of the same shape.
+ * `loss = -mean_i(sum_j(target_ij * log(clip(pred_ij))))`, where the mean
+ * is over the batch dimension `i` and `clip` keeps `pred` in
+ * `[1e-15, 1 - 1e-15]` to avoid `log(0)`.
+ * Backward: `dL/d(pred_ij) = -(1/N) * target_ij / clip(pred_ij)`.
+ *
+ * @throws std::runtime_error if `pred.shape() != target.shape()`, or the shape is neither 1D nor 2D.
+ */
+Tensor cross_entropy_loss(const Tensor& pred, const Tensor& target);
+
 }  // namespace advanceml
