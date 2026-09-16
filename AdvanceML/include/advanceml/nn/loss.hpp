@@ -30,4 +30,16 @@ public:
     Tensor operator()(const Tensor& pred, const Tensor& target) override;
 };
 
+/**
+ * Cross-entropy loss: thin `Loss` wrapper around the `cross_entropy_loss`
+ * op, expecting `pred` to already be a probability distribution (e.g. the
+ * output of `Softmax`) and `target` a one-hot distribution of the same
+ * shape -- matching `basicml.nn.loss.CrossEntropyLoss`. See
+ * `cross_entropy_loss` in `ops.hpp` for the forward/backward formulas.
+ */
+class CrossEntropyLoss : public Loss {
+public:
+    Tensor operator()(const Tensor& pred, const Tensor& target) override;
+};
+
 }  // namespace advanceml
