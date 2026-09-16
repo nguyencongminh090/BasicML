@@ -4,7 +4,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <optional>
 #include <stdexcept>
+#include <string>
+#include <unordered_map>
 
 namespace advanceml {
 
@@ -55,6 +59,88 @@ std::vector<float> transpose(const std::vector<float>& data, size_t rows, size_t
         }
     }
     return out;
+}
+
+Tensor pool2d(const Tensor& x, size_t kernel_size, size_t stride, dnnl::algorithm algorithm, const char* op_name) {
+    if (x.shape().size() != 4) {
+        throw std::runtime_error(std::string(op_name) + ": expected a 4D (N, C, H, W) tensor");
+    }
+    const size_t N = x.shape()[0];
+    const size_t C = x.shape()[1];
+    const size_t H = x.shape()[2];
+    const size_t W = x.shape()[3];
+    if (kernel_size > H || kernel_size > W) {
+        throw std::runtime_error(std::string(op_name) + ": kernel_size exceeds H or W");
+    }
+    const size_t h_out = (H - kernel_size) / stride + 1;
+    const size_t w_out = (W - kernel_size) / stride + 1;
+
+    using dnnl::memory;
+    dnnl::engine& engine = cpu_engine();
+
+    memory::dims src_dims = {static_cast<memory::dim>(N), static_cast<memory::dim>(C), static_cast<memory::dim>(H),
+                              static_cast<memory::dim>(W)};
+    memory::dims dst_dims = {static_cast<memory::dim>(N), static_cast<memory::dim>(C),
+                              static_cast<memory::dim>(h_out), static_cast<memory::dim>(w_out)};
+    memory::dims strides_dims = {static_cast<memory::dim>(stride), static_cast<memory::dim>(stride)};
+    memory::dims kernel_dims = {static_cast<memory::dim>(kernel_size), static_cast<memory::dim>(kernel_size)};
+    memory::dims dilation_dims = {0, 0};
+    memory::dims padding_dims = {0, 0};
+
+    auto src_md = memory::desc(src_dims, memory::data_type::f32, memory::format_tag::nchw);
+    auto dst_md = memory::desc(dst_dims, memory::data_type::f32, memory::format_tag::nchw);
+
+    auto fwd_pd = dnnl::pooling_forward::primitive_desc(engine, dnnl::prop_kind::forward_training, algorithm, src_md,
+                                                         dst_md, strides_dims, kernel_dims, dilation_dims,
+                                                         padding_dims, padding_dims);
+
+    memory src_mem(fwd_pd.src_desc(), engine, const_cast<float*>(x.data().data()));
+    std::vector<float> out_data(N * C * h_out * w_out);
+    memory dst_mem(fwd_pd.dst_desc(), engine, out_data.data());
+
+    const bool needs_workspace = algorithm == dnnl::algorithm::pooling_max;
+    auto workspace_data = std::make_shared<std::vector<uint8_t>>(needs_workspace ? fwd_pd.workspace_desc().get_size() : 0);
+    std::unordered_map<int, memory> fwd_args = {{DNNL_ARG_SRC, src_mem}, {DNNL_ARG_DST, dst_mem}};
+    if (needs_workspace) {
+        fwd_args[DNNL_ARG_WORKSPACE] = memory(fwd_pd.workspace_desc(), engine, workspace_data->data());
+    }
+    dnnl::pooling_forward(fwd_pd).execute(cpu_stream(), fwd_args);
+    cpu_stream().wait();
+
+    auto out_impl = std::make_shared<TensorImpl>();
+    out_impl->data = std::move(out_data);
+    out_impl->shape = {N, C, h_out, w_out};
+    out_impl->requires_grad = x.requires_grad();
+
+    if (out_impl->requires_grad) {
+        auto node = std::make_shared<Node>();
+        node->inputs = {x.impl()};
+        std::vector<size_t> x_shape = x.shape();
+        node->backward_fn = [fwd_pd, algorithm, strides_dims, kernel_dims, dilation_dims, padding_dims, x_shape,
+                              workspace_data, needs_workspace](const Tensor& grad_output) -> std::vector<Tensor> {
+            dnnl::engine& engine = cpu_engine();
+            auto bwd_pd = dnnl::pooling_backward::primitive_desc(engine, algorithm, fwd_pd.src_desc(),
+                                                                  fwd_pd.dst_desc(), strides_dims, kernel_dims,
+                                                                  dilation_dims, padding_dims, padding_dims, fwd_pd);
+
+            memory diff_dst_mem(bwd_pd.diff_dst_desc(), engine, const_cast<float*>(grad_output.data().data()));
+            std::vector<float> grad_x_data(x_shape[0] * x_shape[1] * x_shape[2] * x_shape[3]);
+            memory diff_src_mem(bwd_pd.diff_src_desc(), engine, grad_x_data.data());
+
+            std::unordered_map<int, memory> bwd_args = {{DNNL_ARG_DIFF_DST, diff_dst_mem},
+                                                          {DNNL_ARG_DIFF_SRC, diff_src_mem}};
+            if (needs_workspace) {
+                bwd_args[DNNL_ARG_WORKSPACE] = memory(bwd_pd.workspace_desc(), engine, workspace_data->data());
+            }
+            dnnl::pooling_backward(bwd_pd).execute(cpu_stream(), bwd_args);
+            cpu_stream().wait();
+
+            return {Tensor(std::move(grad_x_data), x_shape)};
+        };
+        out_impl->grad_fn = std::move(node);
+    }
+
+    return Tensor::from_impl(std::move(out_impl));
 }
 
 }  // namespace
@@ -348,6 +434,295 @@ Tensor cross_entropy_loss(const Tensor& pred, const Tensor& target) {
                 grad_target[i] = -upstream * std::log(clipped) / static_cast<float>(n);
             }
             return {Tensor(std::move(grad_pred), pred_copy.shape()), Tensor(std::move(grad_target), target_copy.shape())};
+        };
+        out_impl->grad_fn = std::move(node);
+    }
+
+    return Tensor::from_impl(std::move(out_impl));
+}
+
+Tensor conv2d(const Tensor& x, const Tensor& weight, const Tensor& bias, size_t stride, size_t padding) {
+    if (x.shape().size() != 4) {
+        throw std::runtime_error("conv2d: expected a 4D (N, C, H, W) input tensor");
+    }
+    if (weight.shape().size() != 4) {
+        throw std::runtime_error("conv2d: expected a 4D (out_channels, in_channels, kh, kw) weight tensor");
+    }
+    if (bias.shape().size() != 1 || bias.shape()[0] != weight.shape()[0]) {
+        throw std::runtime_error("conv2d: bias must be 1D with out_channels entries");
+    }
+    if (x.shape()[1] != weight.shape()[1]) {
+        throw std::runtime_error("conv2d: input channel count must match weight's in_channels");
+    }
+    const size_t N = x.shape()[0];
+    const size_t c_in = x.shape()[1];
+    const size_t H = x.shape()[2];
+    const size_t W = x.shape()[3];
+    const size_t c_out = weight.shape()[0];
+    const size_t kh = weight.shape()[2];
+    const size_t kw = weight.shape()[3];
+    if (H + 2 * padding < kh || W + 2 * padding < kw) {
+        throw std::runtime_error("conv2d: kernel is larger than the padded input");
+    }
+    const size_t h_out = (H + 2 * padding - kh) / stride + 1;
+    const size_t w_out = (W + 2 * padding - kw) / stride + 1;
+
+    using dnnl::memory;
+    dnnl::engine& engine = cpu_engine();
+
+    memory::dims src_dims = {static_cast<memory::dim>(N), static_cast<memory::dim>(c_in),
+                              static_cast<memory::dim>(H), static_cast<memory::dim>(W)};
+    memory::dims weights_dims = {static_cast<memory::dim>(c_out), static_cast<memory::dim>(c_in),
+                                  static_cast<memory::dim>(kh), static_cast<memory::dim>(kw)};
+    memory::dims bias_dims = {static_cast<memory::dim>(c_out)};
+    memory::dims dst_dims = {static_cast<memory::dim>(N), static_cast<memory::dim>(c_out),
+                              static_cast<memory::dim>(h_out), static_cast<memory::dim>(w_out)};
+    memory::dims strides_dims = {static_cast<memory::dim>(stride), static_cast<memory::dim>(stride)};
+    memory::dims padding_dims = {static_cast<memory::dim>(padding), static_cast<memory::dim>(padding)};
+
+    auto src_md = memory::desc(src_dims, memory::data_type::f32, memory::format_tag::nchw);
+    auto weights_md = memory::desc(weights_dims, memory::data_type::f32, memory::format_tag::oihw);
+    auto bias_md = memory::desc(bias_dims, memory::data_type::f32, memory::format_tag::x);
+    auto dst_md = memory::desc(dst_dims, memory::data_type::f32, memory::format_tag::nchw);
+
+    auto fwd_pd = dnnl::convolution_forward::primitive_desc(
+        engine, dnnl::prop_kind::forward_training, dnnl::algorithm::convolution_direct, src_md, weights_md, bias_md,
+        dst_md, strides_dims, padding_dims, padding_dims);
+
+    memory src_mem(fwd_pd.src_desc(), engine, const_cast<float*>(x.data().data()));
+    memory weights_mem(fwd_pd.weights_desc(), engine, const_cast<float*>(weight.data().data()));
+    memory bias_mem(fwd_pd.bias_desc(), engine, const_cast<float*>(bias.data().data()));
+    std::vector<float> out_data(N * c_out * h_out * w_out);
+    memory dst_mem(fwd_pd.dst_desc(), engine, out_data.data());
+
+    dnnl::convolution_forward(fwd_pd).execute(cpu_stream(), {
+        {DNNL_ARG_SRC, src_mem},
+        {DNNL_ARG_WEIGHTS, weights_mem},
+        {DNNL_ARG_BIAS, bias_mem},
+        {DNNL_ARG_DST, dst_mem},
+    });
+    cpu_stream().wait();
+
+    auto out_impl = std::make_shared<TensorImpl>();
+    out_impl->data = std::move(out_data);
+    out_impl->shape = {N, c_out, h_out, w_out};
+    out_impl->requires_grad = x.requires_grad() || weight.requires_grad() || bias.requires_grad();
+
+    if (out_impl->requires_grad) {
+        auto node = std::make_shared<Node>();
+        node->inputs = {x.impl(), weight.impl(), bias.impl()};
+        Tensor x_copy = x;
+        Tensor weight_copy = weight;
+        node->backward_fn = [fwd_pd, x_copy, weight_copy, strides_dims, padding_dims,
+                              bias_dims](const Tensor& grad_output) -> std::vector<Tensor> {
+            dnnl::engine& engine = cpu_engine();
+            memory diff_dst_mem(fwd_pd.dst_desc(), engine, const_cast<float*>(grad_output.data().data()));
+
+            auto bwd_data_pd = dnnl::convolution_backward_data::primitive_desc(
+                engine, dnnl::algorithm::convolution_direct, fwd_pd.src_desc(), fwd_pd.weights_desc(),
+                fwd_pd.dst_desc(), strides_dims, padding_dims, padding_dims, fwd_pd);
+            memory weights_mem(fwd_pd.weights_desc(), engine, const_cast<float*>(weight_copy.data().data()));
+            std::vector<float> grad_x_data(x_copy.numel());
+            memory diff_src_mem(bwd_data_pd.diff_src_desc(), engine, grad_x_data.data());
+            dnnl::convolution_backward_data(bwd_data_pd).execute(cpu_stream(), {
+                {DNNL_ARG_DIFF_DST, diff_dst_mem},
+                {DNNL_ARG_WEIGHTS, weights_mem},
+                {DNNL_ARG_DIFF_SRC, diff_src_mem},
+            });
+            cpu_stream().wait();
+
+            auto bwd_weights_pd = dnnl::convolution_backward_weights::primitive_desc(
+                engine, dnnl::algorithm::convolution_direct, fwd_pd.src_desc(), fwd_pd.weights_desc(),
+                fwd_pd.bias_desc(), fwd_pd.dst_desc(), strides_dims, padding_dims, padding_dims, fwd_pd);
+            memory src_mem(fwd_pd.src_desc(), engine, const_cast<float*>(x_copy.data().data()));
+            std::vector<float> grad_w_data(weight_copy.numel());
+            memory diff_weights_mem(bwd_weights_pd.diff_weights_desc(), engine, grad_w_data.data());
+            std::vector<float> grad_b_data(static_cast<size_t>(bias_dims[0]));
+            memory diff_bias_mem(bwd_weights_pd.diff_bias_desc(), engine, grad_b_data.data());
+            dnnl::convolution_backward_weights(bwd_weights_pd).execute(cpu_stream(), {
+                {DNNL_ARG_SRC, src_mem},
+                {DNNL_ARG_DIFF_DST, diff_dst_mem},
+                {DNNL_ARG_DIFF_WEIGHTS, diff_weights_mem},
+                {DNNL_ARG_DIFF_BIAS, diff_bias_mem},
+            });
+            cpu_stream().wait();
+
+            return {
+                Tensor(std::move(grad_x_data), x_copy.shape()),
+                Tensor(std::move(grad_w_data), weight_copy.shape()),
+                Tensor(std::move(grad_b_data), {static_cast<size_t>(bias_dims[0])}),
+            };
+        };
+        out_impl->grad_fn = std::move(node);
+    }
+
+    return Tensor::from_impl(std::move(out_impl));
+}
+
+Tensor max_pool2d(const Tensor& x, size_t kernel_size, size_t stride) {
+    return pool2d(x, kernel_size, stride, dnnl::algorithm::pooling_max, "max_pool2d");
+}
+
+Tensor avg_pool2d(const Tensor& x, size_t kernel_size, size_t stride) {
+    return pool2d(x, kernel_size, stride, dnnl::algorithm::pooling_avg_exclude_padding, "avg_pool2d");
+}
+
+Tensor flatten(const Tensor& x) {
+    if (x.shape().empty()) {
+        throw std::runtime_error("flatten: expected a tensor with at least 1 dimension");
+    }
+    const size_t n = x.shape()[0];
+    const size_t rest = n == 0 ? 0 : x.numel() / n;
+
+    auto out_impl = std::make_shared<TensorImpl>();
+    out_impl->data = x.data();
+    out_impl->shape = {n, rest};
+    out_impl->requires_grad = x.requires_grad();
+
+    if (out_impl->requires_grad) {
+        auto node = std::make_shared<Node>();
+        node->inputs = {x.impl()};
+        std::vector<size_t> x_shape = x.shape();
+        node->backward_fn = [x_shape](const Tensor& grad_output) -> std::vector<Tensor> {
+            return {Tensor(grad_output.data(), x_shape)};
+        };
+        out_impl->grad_fn = std::move(node);
+    }
+
+    return Tensor::from_impl(std::move(out_impl));
+}
+
+Tensor batch_norm2d(const Tensor& x, const Tensor& gamma, const Tensor& beta, std::vector<float>& running_mean,
+                     std::vector<float>& running_var, bool training, float momentum, float eps) {
+    if (x.shape().size() != 4) {
+        throw std::runtime_error("batch_norm2d: expected a 4D (N, C, H, W) input tensor");
+    }
+    const size_t N = x.shape()[0];
+    const size_t C = x.shape()[1];
+    const size_t H = x.shape()[2];
+    const size_t W = x.shape()[3];
+    if (gamma.shape() != std::vector<size_t>{C} || beta.shape() != std::vector<size_t>{C}) {
+        throw std::runtime_error("batch_norm2d: gamma and beta must be 1D with C entries");
+    }
+    if (running_mean.size() != C || running_var.size() != C) {
+        throw std::runtime_error("batch_norm2d: running_mean and running_var must have C entries");
+    }
+    const size_t plane = H * W;
+    const size_t m = N * plane;
+
+    std::vector<float> mean(C);
+    std::vector<float> var(C);
+    if (training) {
+        for (size_t c = 0; c < C; ++c) {
+            float sum = 0.0f;
+            for (size_t n = 0; n < N; ++n) {
+                const size_t base = (n * C + c) * plane;
+                for (size_t p = 0; p < plane; ++p) {
+                    sum += x.data()[base + p];
+                }
+            }
+            mean[c] = sum / static_cast<float>(m);
+        }
+        for (size_t c = 0; c < C; ++c) {
+            float sum_sq = 0.0f;
+            for (size_t n = 0; n < N; ++n) {
+                const size_t base = (n * C + c) * plane;
+                for (size_t p = 0; p < plane; ++p) {
+                    const float d = x.data()[base + p] - mean[c];
+                    sum_sq += d * d;
+                }
+            }
+            var[c] = sum_sq / static_cast<float>(m);
+        }
+        for (size_t c = 0; c < C; ++c) {
+            running_mean[c] = (1.0f - momentum) * running_mean[c] + momentum * mean[c];
+            running_var[c] = (1.0f - momentum) * running_var[c] + momentum * var[c];
+        }
+    } else {
+        mean = running_mean;
+        var = running_var;
+    }
+
+    std::vector<float> std_inv(C);
+    for (size_t c = 0; c < C; ++c) {
+        std_inv[c] = 1.0f / std::sqrt(var[c] + eps);
+    }
+
+    auto xhat = std::make_shared<std::vector<float>>(x.numel());
+    std::vector<float> out_data(x.numel());
+    for (size_t n = 0; n < N; ++n) {
+        for (size_t c = 0; c < C; ++c) {
+            const size_t base = (n * C + c) * plane;
+            for (size_t p = 0; p < plane; ++p) {
+                const float xh = (x.data()[base + p] - mean[c]) * std_inv[c];
+                (*xhat)[base + p] = xh;
+                out_data[base + p] = gamma.data()[c] * xh + beta.data()[c];
+            }
+        }
+    }
+
+    auto out_impl = std::make_shared<TensorImpl>();
+    out_impl->data = std::move(out_data);
+    out_impl->shape = x.shape();
+    out_impl->requires_grad = x.requires_grad() || gamma.requires_grad() || beta.requires_grad();
+
+    if (out_impl->requires_grad) {
+        auto node = std::make_shared<Node>();
+        node->inputs = {x.impl(), gamma.impl(), beta.impl()};
+        Tensor gamma_copy = gamma;
+        std::vector<size_t> x_shape = x.shape();
+        node->backward_fn = [xhat, std_inv, gamma_copy, x_shape, N, C, plane, m,
+                              training](const Tensor& grad_output) -> std::vector<Tensor> {
+            std::vector<float> grad_gamma(C, 0.0f);
+            std::vector<float> grad_beta(C, 0.0f);
+            for (size_t n = 0; n < N; ++n) {
+                for (size_t c = 0; c < C; ++c) {
+                    const size_t base = (n * C + c) * plane;
+                    for (size_t p = 0; p < plane; ++p) {
+                        grad_gamma[c] += grad_output.data()[base + p] * (*xhat)[base + p];
+                        grad_beta[c] += grad_output.data()[base + p];
+                    }
+                }
+            }
+
+            std::vector<float> grad_x(N * C * plane);
+            if (training) {
+                for (size_t c = 0; c < C; ++c) {
+                    float sum_dout = 0.0f;
+                    float sum_dout_xhat = 0.0f;
+                    for (size_t n = 0; n < N; ++n) {
+                        const size_t base = (n * C + c) * plane;
+                        for (size_t p = 0; p < plane; ++p) {
+                            sum_dout += grad_output.data()[base + p];
+                            sum_dout_xhat += grad_output.data()[base + p] * (*xhat)[base + p];
+                        }
+                    }
+                    const float coeff = gamma_copy.data()[c] * std_inv[c] / static_cast<float>(m);
+                    for (size_t n = 0; n < N; ++n) {
+                        const size_t base = (n * C + c) * plane;
+                        for (size_t p = 0; p < plane; ++p) {
+                            grad_x[base + p] = coeff * (static_cast<float>(m) * grad_output.data()[base + p] -
+                                                         sum_dout - (*xhat)[base + p] * sum_dout_xhat);
+                        }
+                    }
+                }
+            } else {
+                for (size_t c = 0; c < C; ++c) {
+                    const float coeff = gamma_copy.data()[c] * std_inv[c];
+                    for (size_t n = 0; n < N; ++n) {
+                        const size_t base = (n * C + c) * plane;
+                        for (size_t p = 0; p < plane; ++p) {
+                            grad_x[base + p] = coeff * grad_output.data()[base + p];
+                        }
+                    }
+                }
+            }
+
+            return {
+                Tensor(std::move(grad_x), x_shape),
+                Tensor(std::move(grad_gamma), {C}),
+                Tensor(std::move(grad_beta), {C}),
+            };
         };
         out_impl->grad_fn = std::move(node);
     }
