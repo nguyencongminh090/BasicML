@@ -16,7 +16,7 @@ Linear::Linear(size_t in_features, size_t out_features, unsigned seed)
       b_(Tensor::zeros({out_features}, /*requires_grad=*/true)) {}
 
 Tensor Linear::forward(const Tensor& x) {
-    return matmul(x, w_) + b_;
+    return linear(x, w_, b_);
 }
 
 std::vector<Tensor> Linear::parameters() const {

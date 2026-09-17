@@ -72,7 +72,7 @@ TEST_CASE("load_mnist parses IDX image/label pairs and normalizes pixels to [0, 
     REQUIRE(dataset.images.shape() == std::vector<size_t>{3, 4});
     REQUIRE(dataset.labels == std::vector<int>{0, 1, 2});
 
-    const std::vector<float>& pixels = dataset.images.data();
+    const FloatBuffer& pixels = dataset.images.data();
     for (size_t i = 0; i < 4; ++i) {
         REQUIRE(pixels[i] == Catch::Approx(0.0f));
         REQUIRE(pixels[4 + i] == Catch::Approx(1.0f));
@@ -88,7 +88,7 @@ TEST_CASE("MnistDataset::one_hot_labels encodes each label as a one-hot row", "[
     Tensor one_hot = dataset.one_hot_labels(/*num_classes=*/3);
 
     REQUIRE(one_hot.shape() == std::vector<size_t>{3, 3});
-    const std::vector<float> expected = {
+    const FloatBuffer expected = {
         1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f,
     };
     REQUIRE(one_hot.data() == expected);

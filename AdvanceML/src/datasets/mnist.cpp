@@ -68,7 +68,7 @@ MnistDataset load_mnist(const std::string& images_path, const std::string& label
         throw std::runtime_error("truncated MNIST labels file: " + labels_path);
     }
 
-    std::vector<float> pixels(pixel_bytes.size());
+    FloatBuffer pixels(pixel_bytes.size());
     for (size_t i = 0; i < pixel_bytes.size(); ++i) {
         pixels[i] = static_cast<float>(pixel_bytes[i]) / 255.0f;
     }
@@ -78,7 +78,7 @@ MnistDataset load_mnist(const std::string& images_path, const std::string& label
 }
 
 Tensor MnistDataset::one_hot_labels(size_t num_classes) const {
-    std::vector<float> data(labels.size() * num_classes, 0.0f);
+    FloatBuffer data(labels.size() * num_classes, 0.0f);
     for (size_t i = 0; i < labels.size(); ++i) {
         const int label = labels[i];
         if (label < 0 || static_cast<size_t>(label) >= num_classes) {

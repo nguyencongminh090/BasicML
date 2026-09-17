@@ -6,7 +6,7 @@ namespace advanceml::metrics {
 
 namespace {
 
-size_t argmax_row(const std::vector<float>& data, size_t row, size_t num_cols) {
+size_t argmax_row(const FloatBuffer& data, size_t row, size_t num_cols) {
     size_t best = 0;
     float best_value = data[row * num_cols];
     for (size_t c = 1; c < num_cols; ++c) {
@@ -31,8 +31,8 @@ void Accuracy::update(const Tensor& pred, const Tensor& target) {
 
     const size_t num_rows = pred.shape()[0];
     const size_t num_cols = pred.shape()[1];
-    const std::vector<float>& pred_data = pred.data();
-    const std::vector<float>& target_data = target.data();
+    const FloatBuffer& pred_data = pred.data();
+    const FloatBuffer& target_data = target.data();
     for (size_t r = 0; r < num_rows; ++r) {
         if (argmax_row(pred_data, r, num_cols) == argmax_row(target_data, r, num_cols)) {
             ++correct_;
@@ -51,7 +51,7 @@ void Accuracy::update(const Tensor& pred, const std::vector<int>& labels) {
     }
 
     const size_t num_cols = pred.shape()[1];
-    const std::vector<float>& pred_data = pred.data();
+    const FloatBuffer& pred_data = pred.data();
     for (size_t r = 0; r < num_rows; ++r) {
         if (static_cast<int>(argmax_row(pred_data, r, num_cols)) == labels[r]) {
             ++correct_;

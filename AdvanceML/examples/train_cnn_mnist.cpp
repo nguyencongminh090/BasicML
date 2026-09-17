@@ -5,7 +5,8 @@
  *
  * Same architecture and training config as the BasicML script -- `(Conv2D ->
  * BatchNorm2D -> ReLU -> MaxPool2D) x2 -> Conv2D -> BatchNorm2D -> ReLU ->
- * AvgPool2D(7,7) -> Flatten -> Linear -> Softmax`, `AdamW`, a genuine
+ * GlobalAvgPool2D -> Flatten -> Linear`, trained with a fused softmax +
+ * cross-entropy loss on the logits, `AdamW`, a genuine
  * disjoint train/test split of real MNIST -- built on TODO-0038's CNN
  * layers and TODO-0039's MNIST loader/accuracy metric, closing out area 6
  * of the TODO-0034 umbrella. Run `AdvanceML/scripts/prepare_mnist_idx.py`
@@ -16,13 +17,12 @@
 #include "advanceml/nn/batch_norm2d.hpp"
 #include "advanceml/nn/conv2d.hpp"
 #include "advanceml/nn/flatten.hpp"
+#include "advanceml/nn/global_avg_pool2d.hpp"
 #include "advanceml/nn/linear.hpp"
 #include "advanceml/nn/loss.hpp"
 #include "advanceml/nn/max_pool2d.hpp"
-#include "advanceml/nn/avg_pool2d.hpp"
 #include "advanceml/nn/relu.hpp"
 #include "advanceml/nn/sequential.hpp"
-#include "advanceml/nn/softmax.hpp"
 #include "advanceml/optim/adamw.hpp"
 
 #include <algorithm>
@@ -54,9 +54,10 @@ struct Model {
 };
 
 // Same layer order as BasicML's build_model(): kernel_size=3/stride=1/padding=1 convs, so
-// only the two MaxPool2D(2) layers shrink the spatial size (28 -> 14 -> 7); AvgPool2D(7, 7)
-// then collapses the whole remaining 7x7 map per channel, playing the role of BasicML's
-// GlobalAvgPool2D (AdvanceML has no dedicated global-pool layer yet).
+// only the two MaxPool2D(2) layers shrink the spatial size (28 -> 14 -> 7) before
+// GlobalAvgPool2D collapses each channel's 7x7 map. BasicML ends in a Softmax layer feeding
+// CrossEntropyLoss; here the model outputs logits for the fused SoftmaxCrossEntropyLoss, which
+// is numerically stabler and one pass cheaper (argmax, and so accuracy, is unchanged).
 Model build_model() {
     auto conv1 = std::make_shared<Conv2D>(1, kConv1Channels, 3, 1, 1, kSeed + 1);
     auto bn1 = std::make_shared<BatchNorm2D>(kConv1Channels);
@@ -69,8 +70,8 @@ Model build_model() {
     auto net = std::make_shared<Sequential>(std::vector<std::shared_ptr<Module>>{
         conv1, bn1, std::make_shared<ReLU>(), std::make_shared<MaxPool2D>(2, 2),
         conv2, bn2, std::make_shared<ReLU>(), std::make_shared<MaxPool2D>(2, 2),
-        conv3, bn3, std::make_shared<ReLU>(), std::make_shared<AvgPool2D>(7, 7),
-        std::make_shared<Flatten>(), linear, std::make_shared<Softmax>(),
+        conv3, bn3, std::make_shared<ReLU>(), std::make_shared<GlobalAvgPool2D>(),
+        std::make_shared<Flatten>(), linear,
     });
     return Model{net, bn1, bn2, bn3};
 }
@@ -87,9 +88,9 @@ void set_training(Model& model, bool training) {
 
 // Copies rows `idx[begin:end]` of a row-major `(N, row_size)` buffer into one contiguous
 // `(end - begin, row_size)` batch buffer, since Tensor has no gather/index-select op yet.
-Tensor gather_rows(const std::vector<float>& data, size_t row_size, const std::vector<size_t>& idx,
+Tensor gather_rows(const FloatBuffer& data, size_t row_size, const std::vector<size_t>& idx,
                     size_t begin, size_t end, std::vector<size_t> batch_shape) {
-    std::vector<float> batch(row_size * (end - begin));
+    FloatBuffer batch(row_size * (end - begin));
     for (size_t i = begin; i < end; ++i) {
         std::copy_n(data.begin() + static_cast<long>(idx[i] * row_size), row_size,
                     batch.begin() + static_cast<long>((i - begin) * row_size));
@@ -102,7 +103,7 @@ struct EpochLog {
     float train_loss, train_acc, test_loss, test_acc, seconds;
 };
 
-std::pair<float, float> evaluate(Model& model, CrossEntropyLoss& criterion,
+std::pair<float, float> evaluate(Model& model, SoftmaxCrossEntropyLoss& criterion,
                                   const datasets::MnistDataset& data, const Tensor& targets) {
     set_training(model, false);
     // Evaluation never calls backward(); without the guard every batch would still build a full
@@ -119,9 +120,9 @@ std::pair<float, float> evaluate(Model& model, CrossEntropyLoss& criterion,
         Tensor xb = gather_rows(data.images.data(), kImageSize * kImageSize, idx, start, end,
                                  {1, kImageSize, kImageSize});
         Tensor yb = gather_rows(targets.data(), 10, idx, start, end, {10});
-        Tensor probs = model.net->forward(xb);
-        total_loss += criterion(probs, yb).data()[0];
-        accuracy.update(probs, yb);
+        Tensor logits = model.net->forward(xb);
+        total_loss += criterion(logits, yb).data()[0];
+        accuracy.update(logits, yb);
         ++n_batches;
     }
     set_training(model, true);
@@ -131,7 +132,7 @@ std::pair<float, float> evaluate(Model& model, CrossEntropyLoss& criterion,
 std::vector<EpochLog> train(Model& model, const datasets::MnistDataset& train_data,
                              const Tensor& train_targets, const datasets::MnistDataset& test_data,
                              const Tensor& test_targets) {
-    CrossEntropyLoss criterion;
+    SoftmaxCrossEntropyLoss criterion;
     AdamW optimizer(model.net->parameters(), kLearningRate, 0.9f, 0.999f, 1e-8f, kWeightDecay);
     const size_t n = train_data.labels.size();
     std::vector<size_t> idx(n);
@@ -152,13 +153,13 @@ std::vector<EpochLog> train(Model& model, const datasets::MnistDataset& train_da
                                      end, {1, kImageSize, kImageSize});
             Tensor yb = gather_rows(train_targets.data(), 10, idx, start, end, {10});
 
-            Tensor probs = model.net->forward(xb);
-            Tensor loss = criterion(probs, yb);
+            Tensor logits = model.net->forward(xb);
+            Tensor loss = criterion(logits, yb);
             loss.backward();
             optimizer.step();
             optimizer.zero_grad();
 
-            train_accuracy.update(probs, yb);
+            train_accuracy.update(logits, yb);
             train_loss_total += loss.data()[0];
             ++n_batches;
         }

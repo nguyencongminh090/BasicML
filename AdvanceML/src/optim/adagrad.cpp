@@ -19,7 +19,7 @@ void Adagrad::step() {
             continue;
         }
         Tensor grad = param.grad();
-        std::vector<float>& values = param.mutable_data();
+        FloatBuffer& values = param.mutable_data();
         std::vector<float>& accumulated_sq = accumulated_sq_[i];
         for (size_t j = 0; j < values.size(); ++j) {
             accumulated_sq[j] += grad.data()[j] * grad.data()[j];

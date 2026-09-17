@@ -25,7 +25,7 @@ void Adam::step() {
             continue;
         }
         Tensor grad = param.grad();
-        std::vector<float>& values = param.mutable_data();
+        FloatBuffer& values = param.mutable_data();
         std::vector<float>& m = first_moment_[i];
         std::vector<float>& v = second_moment_[i];
         for (size_t j = 0; j < values.size(); ++j) {

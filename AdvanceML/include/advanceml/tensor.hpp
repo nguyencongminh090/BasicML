@@ -1,6 +1,9 @@
 #pragma once
 
+#include "advanceml/buffer.hpp"
+
 #include <array>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -11,6 +14,11 @@ namespace advanceml {
 
 class Tensor;
 class TensorImpl;
+
+namespace detail {
+/** An interned oneDNN memory layout (defined in the implementation; opaque to users). */
+struct Layout;
+}  // namespace detail
 
 /** The largest number of inputs (and of saved tensors) any single op records. */
 inline constexpr size_t kMaxNodeInputs = 3;
@@ -32,10 +40,21 @@ using InputGrads = std::array<std::optional<Tensor>, kMaxNodeInputs>;
  * `flatten` shares its input's buffer). `version` counts in-place writes made
  * through `Tensor::mutable_data()`, so backward can detect that a tensor it
  * saved was modified after being saved.
+ *
+ * `layout` is null when `data` is plain row-major (NCHW for 4D tensors).
+ * oneDNN-backed ops (`conv2d`, `batch_norm2d`, `relu`, pooling) may instead
+ * return tensors whose `data` is in a oneDNN-optimized layout such as
+ * `nChw16c` (channels grouped in blocks of 16, possibly zero-padded, so
+ * `data.size()` can exceed the element count). Chains of those ops pass the
+ * blocked buffer along without converting it. The first plain read through
+ * `Tensor::data()` or `Tensor::mutable_data()` converts the storage to plain
+ * row-major in place and clears `layout`; the logical values, and `version`,
+ * do not change.
  */
 struct Storage {
-    std::vector<float> data;
+    FloatBuffer data;
     uint64_t version = 0;
+    std::shared_ptr<const detail::Layout> layout;
 };
 
 /** A storage an op saved for backward, plus its version at save time. */
@@ -162,11 +181,27 @@ private:
  * Copying a Tensor copies the handle, not the data. Reshape views
  * (`flatten`, `identity`, inference-mode `dropout`) share storage with their
  * input, so a write through one is visible through the other.
+ *
+ * Tensors are not thread-safe: `data()` may convert a oneDNN-blocked storage
+ * to plain layout in place (see `Storage`), and ops share process-wide
+ * oneDNN primitive caches that are neither locked nor size-bounded (one entry
+ * per distinct op shape and layout).
  */
 class Tensor {
 public:
     /** Constructs a tensor from row-major `data` with the given `shape`. @throws std::runtime_error if the sizes disagree. */
-    Tensor(std::vector<float> data, std::vector<size_t> shape, bool requires_grad = false);
+    Tensor(FloatBuffer data, std::vector<size_t> shape, bool requires_grad = false);
+
+    /**
+     * Constructs a tensor by copying a standard-allocator `std::vector<float>`
+     * into an aligned `FloatBuffer`. (A template, so that a braced list such as
+     * `Tensor({1.0f, 2.0f}, {2})` unambiguously picks the `FloatBuffer` overload.)
+     *
+     * @throws std::runtime_error if the sizes disagree.
+     */
+    template <std::same_as<std::vector<float>> Vector>
+    Tensor(const Vector& data, std::vector<size_t> shape, bool requires_grad = false)
+        : Tensor(FloatBuffer(data.begin(), data.end()), std::move(shape), requires_grad) {}
 
     /** Returns a `shape`-shaped tensor of zeros. */
     static Tensor zeros(std::vector<size_t> shape, bool requires_grad = false);
@@ -182,8 +217,13 @@ public:
 
     [[nodiscard]] const std::vector<size_t>& shape() const noexcept;
 
-    /** @return Read-only access to the row-major element buffer. */
-    [[nodiscard]] const std::vector<float>& data() const noexcept;
+    /**
+     * @return Read-only access to the row-major element buffer.
+     *
+     * If the storage holds a oneDNN-blocked layout, it is first converted to
+     * plain row-major in place (a logical no-op; see `Storage`).
+     */
+    [[nodiscard]] const FloatBuffer& data() const;
 
     /**
      * @return Writable access to the row-major element buffer.
@@ -191,9 +231,15 @@ public:
      * Counts as an in-place write: bumps the storage version, so a later
      * `backward()` through an op that saved this tensor (or a view sharing its
      * storage) throws instead of computing a wrong gradient. Use `data()` for
-     * reads.
+     * reads. Converts a oneDNN-blocked storage to plain first, like `data()`.
      */
-    [[nodiscard]] std::vector<float>& mutable_data() noexcept;
+    [[nodiscard]] FloatBuffer& mutable_data();
+
+    /**
+     * @return Whether the storage currently holds plain row-major data (true),
+     * or a oneDNN-optimized layout that `data()` would convert first (false).
+     */
+    [[nodiscard]] bool has_plain_layout() const noexcept;
 
     /** @return How many times `mutable_data()` was called on this tensor's storage. */
     [[nodiscard]] uint64_t version() const noexcept;

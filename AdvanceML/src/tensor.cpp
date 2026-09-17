@@ -1,6 +1,7 @@
 #include "advanceml/tensor.hpp"
 
 #include "advanceml/detail/autograd.hpp"
+#include "detail/dnnl_layout.hpp"
 
 #include <atomic>
 #include <random>
@@ -20,7 +21,7 @@ uint64_t next_backward_mark() {
 
 std::shared_ptr<TensorImpl> copy_impl(const TensorImpl& source, const std::vector<size_t>& shape) {
     auto impl = std::make_shared<TensorImpl>();
-    impl->storage = std::make_shared<Storage>(Storage{source.storage->data, 0});
+    impl->storage = std::make_shared<Storage>(Storage{source.storage->data, 0, source.storage->layout});
     impl->shape = shape;
     return impl;
 }
@@ -29,10 +30,16 @@ std::shared_ptr<TensorImpl> copy_impl(const TensorImpl& source, const std::vecto
 // in place only when nothing else can observe the slot's buffer -- gradients are freely shared
 // (operator+ hands the same tensor to both inputs, reshape views share storage), so mutating a
 // shared buffer would corrupt another input's gradient.
+// Two buffers can only be added element by element when they share a layout; blocked gradients in
+// the same layout add directly (their zero padding stays zero), anything else is compared as plain.
 void accumulate(std::shared_ptr<TensorImpl>& slot, std::shared_ptr<TensorImpl> grad) {
     if (!slot) {
         slot = std::move(grad);
         return;
+    }
+    if (slot->storage->layout != grad->storage->layout) {
+        detail::materialize_plain(*slot->storage);
+        detail::materialize_plain(*grad->storage);
     }
     if (slot->storage->data.size() != grad->storage->data.size()) {
         throw std::runtime_error("backward: gradient size does not match an earlier gradient for the same tensor");
@@ -40,15 +47,18 @@ void accumulate(std::shared_ptr<TensorImpl>& slot, std::shared_ptr<TensorImpl> g
     if (slot.use_count() != 1 || slot->storage.use_count() != 1) {
         slot = copy_impl(*slot, slot->shape);
     }
-    std::vector<float>& dst = slot->storage->data;
-    const std::vector<float>& src = grad->storage->data;
-    for (size_t i = 0; i < dst.size(); ++i) {
+    float* const dst = slot->storage->data.data();
+    const float* const src = grad->storage->data.data();
+    const size_t n = slot->storage->data.size();
+    for (size_t i = 0; i < n; ++i) {
         dst[i] += src[i];
     }
 }
 
 void accumulate_leaf(TensorImpl& leaf, std::shared_ptr<TensorImpl> grad) {
-    if (grad->storage->data.size() != leaf.storage->data.size()) {
+    // A leaf's gradient is read by optimizers through data(), so it is always kept plain.
+    detail::materialize_plain(*grad->storage);
+    if (grad->storage->data.size() != detail::numel_of(leaf.shape)) {
         throw std::runtime_error("backward: gradient size does not match its leaf tensor");
     }
     if (leaf.grad) {
@@ -160,25 +170,25 @@ NoGradGuard::~NoGradGuard() {
     grad_enabled = previous_;
 }
 
-Tensor::Tensor(std::vector<float> data, std::vector<size_t> shape, bool requires_grad) {
+Tensor::Tensor(FloatBuffer data, std::vector<size_t> shape, bool requires_grad) {
     if (data.size() != detail::numel_of(shape)) {
         throw std::runtime_error("Tensor: data size does not match shape");
     }
     impl_ = std::make_shared<TensorImpl>();
-    impl_->storage = std::make_shared<Storage>(Storage{std::move(data), 0});
+    impl_->storage = std::make_shared<Storage>(Storage{std::move(data), 0, nullptr});
     impl_->shape = std::move(shape);
     impl_->requires_grad = requires_grad;
 }
 
 Tensor Tensor::zeros(std::vector<size_t> shape, bool requires_grad) {
     const size_t n = detail::numel_of(shape);
-    return Tensor(std::vector<float>(n, 0.0f), std::move(shape), requires_grad);
+    return Tensor(FloatBuffer(n, 0.0f), std::move(shape), requires_grad);
 }
 
 Tensor Tensor::random_uniform(std::vector<size_t> shape, float low, float high, unsigned seed, bool requires_grad) {
     std::mt19937 rng(seed);
     std::uniform_real_distribution<float> dist(low, high);
-    std::vector<float> data(detail::numel_of(shape));
+    FloatBuffer data(detail::numel_of(shape));
     for (float& value : data) {
         value = dist(rng);
     }
@@ -192,20 +202,26 @@ Tensor Tensor::from_impl(std::shared_ptr<TensorImpl> impl) {
 }
 
 size_t Tensor::numel() const noexcept {
-    return impl_->storage->data.size();
+    return detail::numel_of(impl_->shape);
 }
 
 const std::vector<size_t>& Tensor::shape() const noexcept {
     return impl_->shape;
 }
 
-const std::vector<float>& Tensor::data() const noexcept {
+const FloatBuffer& Tensor::data() const {
+    detail::materialize_plain(*impl_->storage);
     return impl_->storage->data;
 }
 
-std::vector<float>& Tensor::mutable_data() noexcept {
+FloatBuffer& Tensor::mutable_data() {
+    detail::materialize_plain(*impl_->storage);
     ++impl_->storage->version;
     return impl_->storage->data;
+}
+
+bool Tensor::has_plain_layout() const noexcept {
+    return impl_->storage->layout == nullptr;
 }
 
 uint64_t Tensor::version() const noexcept {
@@ -297,9 +313,9 @@ Tensor operator+(const Tensor& a, const Tensor& b) {
         throw std::runtime_error("operator+: incompatible shapes");
     }
 
-    const std::vector<float>& a_data = a.data();
-    const std::vector<float>& b_data = b.data();
-    std::vector<float> out_data(a.numel());
+    const FloatBuffer& a_data = a.data();
+    const FloatBuffer& b_data = b.data();
+    FloatBuffer out_data(a.numel());
     if (elementwise) {
         for (size_t i = 0; i < out_data.size(); ++i) {
             out_data[i] = a_data[i] + b_data[i];
@@ -328,8 +344,8 @@ Tensor operator+(const Tensor& a, const Tensor& b) {
                                if (!row_broadcast) {
                                    grads[1] = grad_output;
                                } else {
-                                   const std::vector<float>& g = grad_output.data();
-                                   std::vector<float> grad_b(cols, 0.0f);
+                                   const FloatBuffer& g = grad_output.data();
+                                   FloatBuffer grad_b(cols, 0.0f);
                                    for (size_t r = 0; r < rows; ++r) {
                                        for (size_t c = 0; c < cols; ++c) {
                                            grad_b[c] += g[r * cols + c];
@@ -349,9 +365,9 @@ Tensor operator*(const Tensor& a, const Tensor& b) {
         throw std::runtime_error("operator*: shapes must match (elementwise only)");
     }
 
-    const std::vector<float>& a_data = a.data();
-    const std::vector<float>& b_data = b.data();
-    std::vector<float> out_data(a.numel());
+    const FloatBuffer& a_data = a.data();
+    const FloatBuffer& b_data = b.data();
+    FloatBuffer out_data(a.numel());
     for (size_t i = 0; i < out_data.size(); ++i) {
         out_data[i] = a_data[i] * b_data[i];
     }

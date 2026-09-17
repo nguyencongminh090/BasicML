@@ -14,6 +14,10 @@ Tensor CrossEntropyLoss::operator()(const Tensor& pred, const Tensor& target) {
     return cross_entropy_loss(pred, target);
 }
 
+Tensor SoftmaxCrossEntropyLoss::operator()(const Tensor& pred, const Tensor& target) {
+    return softmax_cross_entropy(pred, target);
+}
+
 Tensor AbsoluteLoss::operator()(const Tensor& pred, const Tensor& target) {
     return abs_loss(pred, target);
 }
