@@ -42,4 +42,26 @@ public:
     Tensor operator()(const Tensor& pred, const Tensor& target) override;
 };
 
+/**
+ * Mean absolute error loss: thin `Loss` wrapper around the `abs_loss` op
+ * (`loss = mean(|pred - target|)`). See `abs_loss` in `ops.hpp` for the
+ * forward/backward formulas.
+ */
+class AbsoluteLoss : public Loss {
+public:
+    Tensor operator()(const Tensor& pred, const Tensor& target) override;
+};
+
+/**
+ * Binary cross-entropy loss: thin `Loss` wrapper around the
+ * `binary_cross_entropy` op, expecting `pred` to already be a probability
+ * per element (e.g. the output of `Sigmoid`) and `target` a `{0, 1}`-valued
+ * tensor of the same shape -- matching `basicml.nn.loss.BinaryCrossEntropy`.
+ * See `binary_cross_entropy` in `ops.hpp` for the forward/backward formulas.
+ */
+class BinaryCrossEntropy : public Loss {
+public:
+    Tensor operator()(const Tensor& pred, const Tensor& target) override;
+};
+
 }  // namespace advanceml

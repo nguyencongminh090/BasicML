@@ -30,9 +30,28 @@ add_library(advanceml
     src/nn/avg_pool2d.cpp
     src/nn/flatten.cpp
     src/nn/batch_norm2d.cpp
+    src/nn/batch_norm1d.cpp
+    src/nn/global_avg_pool2d.cpp
+    src/nn/global_max_pool2d.cpp
+    src/nn/dropout.cpp
+    src/nn/tanh.cpp
+    src/nn/identity.cpp
+    src/nn/prelu.cpp
+    src/nn/elu.cpp
+    src/nn/selu.cpp
+    src/nn/softplus.cpp
+    src/nn/swish.cpp
+    src/nn/mish.cpp
+    src/nn/hardtanh.cpp
+    src/nn/hardsigmoid.cpp
     src/optim/optimizer.cpp
     src/optim/sgd.cpp
     src/optim/momentum.cpp
+    src/optim/nesterov.cpp
+    src/optim/adagrad.cpp
+    src/optim/adadelta.cpp
+    src/optim/rmsprop.cpp
+    src/optim/muon.cpp
     src/optim/adam.cpp
     src/optim/adamw.cpp
     src/datasets/mnist.cpp
