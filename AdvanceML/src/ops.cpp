@@ -24,6 +24,55 @@ dnnl::stream& cpu_stream() {
     return stream;
 }
 
+dnnl::memory reorder_to(dnnl::stream& stream, dnnl::engine& engine, dnnl::memory src,
+                         const dnnl::memory::desc& dst_desc) {
+    if (src.get_desc() == dst_desc) {
+        return src;
+    }
+    dnnl::memory dst(dst_desc, engine);
+    dnnl::reorder(src, dst).execute(stream, src, dst);
+    stream.wait();
+    return dst;
+}
+
+void reorder_into(dnnl::stream& stream, dnnl::memory src, dnnl::memory dst) {
+    dnnl::reorder(src, dst).execute(stream, src, dst);
+    stream.wait();
+}
+
+// dnnl::primitive_desc construction JIT-selects and compiles a kernel, which is far more
+// expensive than executing it. Training loops call the same op shape thousands of times
+// (once per batch per layer per epoch), so primitives are cached per op+exact-shape rather
+// than rebuilt on every forward/backward call. Keyed on real dims (not an assumed constant
+// batch size) because the dataset's last batch is typically smaller than kBatchSize.
+size_t hash_combine(size_t seed, size_t value) {
+    return seed ^ (value + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2));
+}
+
+struct GemmKey {
+    size_t m, k, n;
+    bool operator==(const GemmKey& other) const { return m == other.m && k == other.k && n == other.n; }
+};
+
+struct GemmKeyHash {
+    size_t operator()(const GemmKey& key) const {
+        size_t h = std::hash<size_t>{}(key.m);
+        h = hash_combine(h, std::hash<size_t>{}(key.k));
+        h = hash_combine(h, std::hash<size_t>{}(key.n));
+        return h;
+    }
+};
+
+struct GemmCacheEntry {
+    dnnl::matmul::primitive_desc pd;
+    dnnl::matmul prim;
+};
+
+std::unordered_map<GemmKey, GemmCacheEntry, GemmKeyHash>& gemm_cache() {
+    static std::unordered_map<GemmKey, GemmCacheEntry, GemmKeyHash> cache;
+    return cache;
+}
+
 std::vector<float> gemm(const float* a, const float* b, size_t m, size_t k, size_t n) {
     using dnnl::memory;
     dnnl::engine& engine = cpu_engine();
@@ -41,8 +90,15 @@ std::vector<float> gemm(const float* a, const float* b, size_t m, size_t k, size
     memory b_mem(b_md, engine, const_cast<float*>(b));
     memory c_mem(c_md, engine, c.data());
 
-    auto matmul_pd = dnnl::matmul::primitive_desc(engine, a_md, b_md, c_md);
-    dnnl::matmul(matmul_pd).execute(cpu_stream(), {
+    GemmKey key{m, k, n};
+    auto& cache = gemm_cache();
+    auto it = cache.find(key);
+    if (it == cache.end()) {
+        auto matmul_pd = dnnl::matmul::primitive_desc(engine, a_md, b_md, c_md);
+        dnnl::matmul prim(matmul_pd);
+        it = cache.emplace(key, GemmCacheEntry{std::move(matmul_pd), std::move(prim)}).first;
+    }
+    it->second.prim.execute(cpu_stream(), {
         {DNNL_ARG_SRC, a_mem},
         {DNNL_ARG_WEIGHTS, b_mem},
         {DNNL_ARG_DST, c_mem},
@@ -59,6 +115,40 @@ std::vector<float> transpose(const std::vector<float>& data, size_t rows, size_t
         }
     }
     return out;
+}
+
+struct PoolKey {
+    size_t N, C, H, W, kernel_size, stride;
+    dnnl::algorithm algorithm;
+    bool operator==(const PoolKey& other) const {
+        return N == other.N && C == other.C && H == other.H && W == other.W &&
+               kernel_size == other.kernel_size && stride == other.stride && algorithm == other.algorithm;
+    }
+};
+
+struct PoolKeyHash {
+    size_t operator()(const PoolKey& key) const {
+        size_t h = std::hash<size_t>{}(key.N);
+        h = hash_combine(h, std::hash<size_t>{}(key.C));
+        h = hash_combine(h, std::hash<size_t>{}(key.H));
+        h = hash_combine(h, std::hash<size_t>{}(key.W));
+        h = hash_combine(h, std::hash<size_t>{}(key.kernel_size));
+        h = hash_combine(h, std::hash<size_t>{}(key.stride));
+        h = hash_combine(h, std::hash<size_t>{}(static_cast<size_t>(key.algorithm)));
+        return h;
+    }
+};
+
+struct PoolCacheEntry {
+    dnnl::pooling_forward::primitive_desc fwd_pd;
+    dnnl::pooling_forward fwd_prim;
+    std::optional<dnnl::pooling_backward::primitive_desc> bwd_pd;
+    std::optional<dnnl::pooling_backward> bwd_prim;
+};
+
+std::unordered_map<PoolKey, PoolCacheEntry, PoolKeyHash>& pool_cache() {
+    static std::unordered_map<PoolKey, PoolCacheEntry, PoolKeyHash> cache;
+    return cache;
 }
 
 Tensor pool2d(const Tensor& x, size_t kernel_size, size_t stride, dnnl::algorithm algorithm, const char* op_name) {
@@ -90,9 +180,18 @@ Tensor pool2d(const Tensor& x, size_t kernel_size, size_t stride, dnnl::algorith
     auto src_md = memory::desc(src_dims, memory::data_type::f32, memory::format_tag::nchw);
     auto dst_md = memory::desc(dst_dims, memory::data_type::f32, memory::format_tag::nchw);
 
-    auto fwd_pd = dnnl::pooling_forward::primitive_desc(engine, dnnl::prop_kind::forward_training, algorithm, src_md,
-                                                         dst_md, strides_dims, kernel_dims, dilation_dims,
-                                                         padding_dims, padding_dims);
+    PoolKey key{N, C, H, W, kernel_size, stride, algorithm};
+    auto& cache = pool_cache();
+    auto cache_it = cache.find(key);
+    if (cache_it == cache.end()) {
+        auto fwd_pd = dnnl::pooling_forward::primitive_desc(engine, dnnl::prop_kind::forward_training, algorithm,
+                                                             src_md, dst_md, strides_dims, kernel_dims,
+                                                             dilation_dims, padding_dims, padding_dims);
+        dnnl::pooling_forward fwd_prim(fwd_pd);
+        cache_it = cache.emplace(key, PoolCacheEntry{std::move(fwd_pd), std::move(fwd_prim), std::nullopt, std::nullopt}).first;
+    }
+    PoolCacheEntry& entry = cache_it->second;
+    const dnnl::pooling_forward::primitive_desc& fwd_pd = entry.fwd_pd;
 
     memory src_mem(fwd_pd.src_desc(), engine, const_cast<float*>(x.data().data()));
     std::vector<float> out_data(N * C * h_out * w_out);
@@ -104,7 +203,7 @@ Tensor pool2d(const Tensor& x, size_t kernel_size, size_t stride, dnnl::algorith
     if (needs_workspace) {
         fwd_args[DNNL_ARG_WORKSPACE] = memory(fwd_pd.workspace_desc(), engine, workspace_data->data());
     }
-    dnnl::pooling_forward(fwd_pd).execute(cpu_stream(), fwd_args);
+    entry.fwd_prim.execute(cpu_stream(), fwd_args);
     cpu_stream().wait();
 
     auto out_impl = std::make_shared<TensorImpl>();
@@ -116,12 +215,17 @@ Tensor pool2d(const Tensor& x, size_t kernel_size, size_t stride, dnnl::algorith
         auto node = std::make_shared<Node>();
         node->inputs = {x.impl()};
         std::vector<size_t> x_shape = x.shape();
-        node->backward_fn = [fwd_pd, algorithm, strides_dims, kernel_dims, dilation_dims, padding_dims, x_shape,
+        node->backward_fn = [key, algorithm, strides_dims, kernel_dims, dilation_dims, padding_dims, x_shape,
                               workspace_data, needs_workspace](const Tensor& grad_output) -> std::vector<Tensor> {
             dnnl::engine& engine = cpu_engine();
-            auto bwd_pd = dnnl::pooling_backward::primitive_desc(engine, algorithm, fwd_pd.src_desc(),
-                                                                  fwd_pd.dst_desc(), strides_dims, kernel_dims,
-                                                                  dilation_dims, padding_dims, padding_dims, fwd_pd);
+            PoolCacheEntry& entry = pool_cache().at(key);
+            if (!entry.bwd_pd.has_value()) {
+                entry.bwd_pd = dnnl::pooling_backward::primitive_desc(
+                    engine, algorithm, entry.fwd_pd.src_desc(), entry.fwd_pd.dst_desc(), strides_dims, kernel_dims,
+                    dilation_dims, padding_dims, padding_dims, entry.fwd_pd);
+                entry.bwd_prim = dnnl::pooling_backward(*entry.bwd_pd);
+            }
+            const dnnl::pooling_backward::primitive_desc& bwd_pd = *entry.bwd_pd;
 
             memory diff_dst_mem(bwd_pd.diff_dst_desc(), engine, const_cast<float*>(grad_output.data().data()));
             std::vector<float> grad_x_data(x_shape[0] * x_shape[1] * x_shape[2] * x_shape[3]);
@@ -132,7 +236,7 @@ Tensor pool2d(const Tensor& x, size_t kernel_size, size_t stride, dnnl::algorith
             if (needs_workspace) {
                 bwd_args[DNNL_ARG_WORKSPACE] = memory(bwd_pd.workspace_desc(), engine, workspace_data->data());
             }
-            dnnl::pooling_backward(bwd_pd).execute(cpu_stream(), bwd_args);
+            entry.bwd_prim->execute(cpu_stream(), bwd_args);
             cpu_stream().wait();
 
             return {Tensor(std::move(grad_x_data), x_shape)};
@@ -141,6 +245,43 @@ Tensor pool2d(const Tensor& x, size_t kernel_size, size_t stride, dnnl::algorith
     }
 
     return Tensor::from_impl(std::move(out_impl));
+}
+
+struct ConvKey {
+    size_t N, c_in, H, W, c_out, kh, kw, stride, padding;
+    bool operator==(const ConvKey& other) const {
+        return N == other.N && c_in == other.c_in && H == other.H && W == other.W && c_out == other.c_out &&
+               kh == other.kh && kw == other.kw && stride == other.stride && padding == other.padding;
+    }
+};
+
+struct ConvKeyHash {
+    size_t operator()(const ConvKey& key) const {
+        size_t h = std::hash<size_t>{}(key.N);
+        h = hash_combine(h, std::hash<size_t>{}(key.c_in));
+        h = hash_combine(h, std::hash<size_t>{}(key.H));
+        h = hash_combine(h, std::hash<size_t>{}(key.W));
+        h = hash_combine(h, std::hash<size_t>{}(key.c_out));
+        h = hash_combine(h, std::hash<size_t>{}(key.kh));
+        h = hash_combine(h, std::hash<size_t>{}(key.kw));
+        h = hash_combine(h, std::hash<size_t>{}(key.stride));
+        h = hash_combine(h, std::hash<size_t>{}(key.padding));
+        return h;
+    }
+};
+
+struct ConvCacheEntry {
+    dnnl::convolution_forward::primitive_desc fwd_pd;
+    dnnl::convolution_forward fwd_prim;
+    std::optional<dnnl::convolution_backward_data::primitive_desc> bwd_data_pd;
+    std::optional<dnnl::convolution_backward_data> bwd_data_prim;
+    std::optional<dnnl::convolution_backward_weights::primitive_desc> bwd_weights_pd;
+    std::optional<dnnl::convolution_backward_weights> bwd_weights_prim;
+};
+
+std::unordered_map<ConvKey, ConvCacheEntry, ConvKeyHash>& conv_cache() {
+    static std::unordered_map<ConvKey, ConvCacheEntry, ConvKeyHash> cache;
+    return cache;
 }
 
 }  // namespace
@@ -884,28 +1025,55 @@ Tensor conv2d(const Tensor& x, const Tensor& weight, const Tensor& bias, size_t 
     memory::dims strides_dims = {static_cast<memory::dim>(stride), static_cast<memory::dim>(stride)};
     memory::dims padding_dims = {static_cast<memory::dim>(padding), static_cast<memory::dim>(padding)};
 
-    auto src_md = memory::desc(src_dims, memory::data_type::f32, memory::format_tag::nchw);
-    auto weights_md = memory::desc(weights_dims, memory::data_type::f32, memory::format_tag::oihw);
+    // format_tag::any (instead of a fixed nchw/oihw layout) lets oneDNN pick its optimized
+    // blocked-layout AVX-512 VNNI kernel (`jit:avx512_core`) instead of silently falling back
+    // to the unoptimized reference `jit_uni_ncsp_convolution:conv+ref:any` path that plain
+    // NCHW/OIHW memory formats force it into -- confirmed via DNNL_VERBOSE, and the dominant
+    // cost of a conv2d call, dwarfing primitive_desc construction. The rest of the codebase
+    // (Tensor) only ever holds plain contiguous NCHW/OIHW data, so the plain<->optimal layout
+    // conversion happens via an explicit oneDNN reorder at the boundary of each call.
+    auto src_md = memory::desc(src_dims, memory::data_type::f32, memory::format_tag::any);
+    auto weights_md = memory::desc(weights_dims, memory::data_type::f32, memory::format_tag::any);
     auto bias_md = memory::desc(bias_dims, memory::data_type::f32, memory::format_tag::x);
-    auto dst_md = memory::desc(dst_dims, memory::data_type::f32, memory::format_tag::nchw);
+    auto dst_md = memory::desc(dst_dims, memory::data_type::f32, memory::format_tag::any);
 
-    auto fwd_pd = dnnl::convolution_forward::primitive_desc(
-        engine, dnnl::prop_kind::forward_training, dnnl::algorithm::convolution_direct, src_md, weights_md, bias_md,
-        dst_md, strides_dims, padding_dims, padding_dims);
+    ConvKey key{N, c_in, H, W, c_out, kh, kw, stride, padding};
+    auto& cache = conv_cache();
+    auto cache_it = cache.find(key);
+    if (cache_it == cache.end()) {
+        auto fwd_pd = dnnl::convolution_forward::primitive_desc(
+            engine, dnnl::prop_kind::forward_training, dnnl::algorithm::convolution_direct, src_md, weights_md,
+            bias_md, dst_md, strides_dims, padding_dims, padding_dims);
+        dnnl::convolution_forward fwd_prim(fwd_pd);
+        cache_it = cache.emplace(key, ConvCacheEntry{std::move(fwd_pd), std::move(fwd_prim), std::nullopt,
+                                                      std::nullopt, std::nullopt, std::nullopt}).first;
+    }
+    ConvCacheEntry& entry = cache_it->second;
+    const dnnl::convolution_forward::primitive_desc& fwd_pd = entry.fwd_pd;
 
-    memory src_mem(fwd_pd.src_desc(), engine, const_cast<float*>(x.data().data()));
-    memory weights_mem(fwd_pd.weights_desc(), engine, const_cast<float*>(weight.data().data()));
+    auto plain_src_md = memory::desc(src_dims, memory::data_type::f32, memory::format_tag::nchw);
+    auto plain_weights_md = memory::desc(weights_dims, memory::data_type::f32, memory::format_tag::oihw);
+    auto plain_dst_md = memory::desc(dst_dims, memory::data_type::f32, memory::format_tag::nchw);
+
+    memory src_plain(plain_src_md, engine, const_cast<float*>(x.data().data()));
+    memory weights_plain(plain_weights_md, engine, const_cast<float*>(weight.data().data()));
     memory bias_mem(fwd_pd.bias_desc(), engine, const_cast<float*>(bias.data().data()));
-    std::vector<float> out_data(N * c_out * h_out * w_out);
-    memory dst_mem(fwd_pd.dst_desc(), engine, out_data.data());
 
-    dnnl::convolution_forward(fwd_pd).execute(cpu_stream(), {
+    memory src_mem = reorder_to(cpu_stream(), engine, src_plain, fwd_pd.src_desc());
+    memory weights_mem = reorder_to(cpu_stream(), engine, weights_plain, fwd_pd.weights_desc());
+    memory dst_mem(fwd_pd.dst_desc(), engine);
+
+    entry.fwd_prim.execute(cpu_stream(), {
         {DNNL_ARG_SRC, src_mem},
         {DNNL_ARG_WEIGHTS, weights_mem},
         {DNNL_ARG_BIAS, bias_mem},
         {DNNL_ARG_DST, dst_mem},
     });
     cpu_stream().wait();
+
+    std::vector<float> out_data(N * c_out * h_out * w_out);
+    memory dst_plain(plain_dst_md, engine, out_data.data());
+    reorder_into(cpu_stream(), dst_mem, dst_plain);
 
     auto out_impl = std::make_shared<TensorImpl>();
     out_impl->data = std::move(out_data);
@@ -917,39 +1085,75 @@ Tensor conv2d(const Tensor& x, const Tensor& weight, const Tensor& bias, size_t 
         node->inputs = {x.impl(), weight.impl(), bias.impl()};
         Tensor x_copy = x;
         Tensor weight_copy = weight;
-        node->backward_fn = [fwd_pd, x_copy, weight_copy, strides_dims, padding_dims,
+        node->backward_fn = [key, x_copy, weight_copy, strides_dims, padding_dims,
                               bias_dims](const Tensor& grad_output) -> std::vector<Tensor> {
             dnnl::engine& engine = cpu_engine();
-            memory diff_dst_mem(fwd_pd.dst_desc(), engine, const_cast<float*>(grad_output.data().data()));
+            dnnl::stream& stream = cpu_stream();
+            ConvCacheEntry& entry = conv_cache().at(key);
+            const dnnl::convolution_forward::primitive_desc& fwd_pd = entry.fwd_pd;
 
-            auto bwd_data_pd = dnnl::convolution_backward_data::primitive_desc(
-                engine, dnnl::algorithm::convolution_direct, fwd_pd.src_desc(), fwd_pd.weights_desc(),
-                fwd_pd.dst_desc(), strides_dims, padding_dims, padding_dims, fwd_pd);
-            memory weights_mem(fwd_pd.weights_desc(), engine, const_cast<float*>(weight_copy.data().data()));
-            std::vector<float> grad_x_data(x_copy.numel());
-            memory diff_src_mem(bwd_data_pd.diff_src_desc(), engine, grad_x_data.data());
-            dnnl::convolution_backward_data(bwd_data_pd).execute(cpu_stream(), {
-                {DNNL_ARG_DIFF_DST, diff_dst_mem},
-                {DNNL_ARG_WEIGHTS, weights_mem},
-                {DNNL_ARG_DIFF_SRC, diff_src_mem},
+            memory::dims x_dims = {static_cast<memory::dim>(x_copy.shape()[0]), static_cast<memory::dim>(x_copy.shape()[1]),
+                                    static_cast<memory::dim>(x_copy.shape()[2]), static_cast<memory::dim>(x_copy.shape()[3])};
+            memory::dims w_dims = {static_cast<memory::dim>(weight_copy.shape()[0]), static_cast<memory::dim>(weight_copy.shape()[1]),
+                                    static_cast<memory::dim>(weight_copy.shape()[2]), static_cast<memory::dim>(weight_copy.shape()[3])};
+            memory::dims go_dims = {static_cast<memory::dim>(grad_output.shape()[0]), static_cast<memory::dim>(grad_output.shape()[1]),
+                                     static_cast<memory::dim>(grad_output.shape()[2]), static_cast<memory::dim>(grad_output.shape()[3])};
+            auto plain_src_md = memory::desc(x_dims, memory::data_type::f32, memory::format_tag::nchw);
+            auto plain_weights_md = memory::desc(w_dims, memory::data_type::f32, memory::format_tag::oihw);
+            auto plain_dst_md = memory::desc(go_dims, memory::data_type::f32, memory::format_tag::nchw);
+
+            memory diff_dst_plain(plain_dst_md, engine, const_cast<float*>(grad_output.data().data()));
+            memory weights_plain(plain_weights_md, engine, const_cast<float*>(weight_copy.data().data()));
+            memory src_plain(plain_src_md, engine, const_cast<float*>(x_copy.data().data()));
+
+            if (!entry.bwd_data_pd.has_value()) {
+                auto diff_src_any = memory::desc(x_dims, memory::data_type::f32, memory::format_tag::any);
+                auto weights_any = memory::desc(w_dims, memory::data_type::f32, memory::format_tag::any);
+                auto diff_dst_any = memory::desc(go_dims, memory::data_type::f32, memory::format_tag::any);
+                entry.bwd_data_pd = dnnl::convolution_backward_data::primitive_desc(
+                    engine, dnnl::algorithm::convolution_direct, diff_src_any, weights_any, diff_dst_any,
+                    strides_dims, padding_dims, padding_dims, fwd_pd);
+                entry.bwd_data_prim = dnnl::convolution_backward_data(*entry.bwd_data_pd);
+            }
+            const dnnl::convolution_backward_data::primitive_desc& bwd_data_pd = *entry.bwd_data_pd;
+            memory diff_dst_opt = reorder_to(stream, engine, diff_dst_plain, bwd_data_pd.diff_dst_desc());
+            memory weights_opt = reorder_to(stream, engine, weights_plain, bwd_data_pd.weights_desc());
+            memory diff_src_opt(bwd_data_pd.diff_src_desc(), engine);
+            entry.bwd_data_prim->execute(stream, {
+                {DNNL_ARG_DIFF_DST, diff_dst_opt},
+                {DNNL_ARG_WEIGHTS, weights_opt},
+                {DNNL_ARG_DIFF_SRC, diff_src_opt},
             });
-            cpu_stream().wait();
+            stream.wait();
+            std::vector<float> grad_x_data(x_copy.numel());
+            memory diff_src_plain(plain_src_md, engine, grad_x_data.data());
+            reorder_into(stream, diff_src_opt, diff_src_plain);
 
-            auto bwd_weights_pd = dnnl::convolution_backward_weights::primitive_desc(
-                engine, dnnl::algorithm::convolution_direct, fwd_pd.src_desc(), fwd_pd.weights_desc(),
-                fwd_pd.bias_desc(), fwd_pd.dst_desc(), strides_dims, padding_dims, padding_dims, fwd_pd);
-            memory src_mem(fwd_pd.src_desc(), engine, const_cast<float*>(x_copy.data().data()));
-            std::vector<float> grad_w_data(weight_copy.numel());
-            memory diff_weights_mem(bwd_weights_pd.diff_weights_desc(), engine, grad_w_data.data());
+            if (!entry.bwd_weights_pd.has_value()) {
+                auto src_any = memory::desc(x_dims, memory::data_type::f32, memory::format_tag::any);
+                auto diff_weights_any = memory::desc(w_dims, memory::data_type::f32, memory::format_tag::any);
+                auto diff_dst_any = memory::desc(go_dims, memory::data_type::f32, memory::format_tag::any);
+                entry.bwd_weights_pd = dnnl::convolution_backward_weights::primitive_desc(
+                    engine, dnnl::algorithm::convolution_direct, src_any, diff_weights_any, fwd_pd.bias_desc(),
+                    diff_dst_any, strides_dims, padding_dims, padding_dims, fwd_pd);
+                entry.bwd_weights_prim = dnnl::convolution_backward_weights(*entry.bwd_weights_pd);
+            }
+            const dnnl::convolution_backward_weights::primitive_desc& bwd_weights_pd = *entry.bwd_weights_pd;
+            memory src_opt = reorder_to(stream, engine, src_plain, bwd_weights_pd.src_desc());
+            memory diff_dst_opt2 = reorder_to(stream, engine, diff_dst_plain, bwd_weights_pd.diff_dst_desc());
+            memory diff_weights_opt(bwd_weights_pd.diff_weights_desc(), engine);
             std::vector<float> grad_b_data(static_cast<size_t>(bias_dims[0]));
             memory diff_bias_mem(bwd_weights_pd.diff_bias_desc(), engine, grad_b_data.data());
-            dnnl::convolution_backward_weights(bwd_weights_pd).execute(cpu_stream(), {
-                {DNNL_ARG_SRC, src_mem},
-                {DNNL_ARG_DIFF_DST, diff_dst_mem},
-                {DNNL_ARG_DIFF_WEIGHTS, diff_weights_mem},
+            entry.bwd_weights_prim->execute(stream, {
+                {DNNL_ARG_SRC, src_opt},
+                {DNNL_ARG_DIFF_DST, diff_dst_opt2},
+                {DNNL_ARG_DIFF_WEIGHTS, diff_weights_opt},
                 {DNNL_ARG_DIFF_BIAS, diff_bias_mem},
             });
-            cpu_stream().wait();
+            stream.wait();
+            std::vector<float> grad_w_data(weight_copy.numel());
+            memory diff_weights_plain(plain_weights_md, engine, grad_w_data.data());
+            reorder_into(stream, diff_weights_opt, diff_weights_plain);
 
             return {
                 Tensor(std::move(grad_x_data), x_copy.shape()),
