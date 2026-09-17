@@ -21,8 +21,10 @@ add_executable(advanceml_tests
     layer_parity_test.cpp
     activation_parity_test.cpp
     kernel_perf_test.cpp
+    dnnl_layout_test.cpp
 )
 target_link_libraries(advanceml_tests PRIVATE advanceml Catch2::Catch2WithMain)
+target_include_directories(advanceml_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
 include(CTest)
 include(Catch)

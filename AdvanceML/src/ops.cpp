@@ -513,9 +513,42 @@ Tensor linear(const Tensor& x, const Tensor& weight, const Tensor& bias) {
     return out;
 }
 
+namespace {
+
+// oneDNN's memory::desc (plain_desc) only covers 1D-6D; used for inputs beyond that instead of
+// throwing, since nothing about relu's math needs a descriptor.
+Tensor relu_scalar(const Tensor& x) {
+    const FloatBuffer& x_data = x.data();
+    FloatBuffer out_data(x.numel());
+    for (size_t i = 0; i < out_data.size(); ++i) {
+        out_data[i] = x_data[i] > 0.0f ? x_data[i] : 0.0f;
+    }
+
+    Tensor out(std::move(out_data), x.shape());
+    if (detail::should_record({&x})) {
+        detail::record(out, {&x}, {&out}, [y = out.impl()->storage](const Tensor& grad_output) -> InputGrads {
+            const FloatBuffer& y_data = y->data;
+            const FloatBuffer& g = grad_output.data();
+            FloatBuffer grad_x(y_data.size());
+            for (size_t i = 0; i < grad_x.size(); ++i) {
+                grad_x[i] = y_data[i] > 0.0f ? g[i] : 0.0f;
+            }
+            return {Tensor(std::move(grad_x), grad_output.shape())};
+        });
+    }
+    return out;
+}
+
+}  // namespace
+
 // oneDNN eltwise keeps the input's (possibly blocked) layout, and the *_use_dst_for_bwd variant
-// lets backward read the saved output instead of keeping the input alive as well.
+// lets backward read the saved output instead of keeping the input alive as well. oneDNN's
+// memory::desc only covers 1D-6D (see plain_desc), so inputs beyond that fall back to a plain
+// scalar loop rather than throwing.
 Tensor relu(const Tensor& x) {
+    if (x.shape().size() > 6) {
+        return relu_scalar(x);
+    }
     dnnl::engine& engine = cpu_engine();
     const memory::desc src_md = detail::desc_of(x);
     const bool record_graph = detail::should_record({&x});

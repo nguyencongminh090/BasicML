@@ -11,22 +11,53 @@ namespace advanceml::detail {
 
 namespace {
 
-// Linear scan: a training run only ever sees a few dozen distinct descriptors (one per op shape
-// and layout), and memory::desc has equality but no hash.
-std::vector<std::shared_ptr<const Layout>>& layout_registry() {
-    static std::vector<std::shared_ptr<const Layout>> registry;
+size_t hash_combine(size_t seed, size_t h) {
+    return seed ^ (h + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2));
+}
+
+template <typename T>
+size_t hash_dims(size_t seed, const std::vector<T>& dims) {
+    for (T d : dims) {
+        seed = hash_combine(seed, std::hash<T>{}(d));
+    }
+    return seed;
+}
+
+// A memory::desc has equality (dnnl_memory_desc_equal) but no hash, so this approximates one from
+// the fields that actually vary between descriptors seen in practice (dims, dtype, strides, and
+// the blocked-format inner block/index lists). DescEqual below falls back to the real `==`, so a
+// hash collision (or a field this misses) only costs an extra bucket compare, never correctness.
+struct DescHash {
+    size_t operator()(const dnnl::memory::desc& desc) const {
+        size_t seed = hash_combine(0, std::hash<int>{}(static_cast<int>(desc.get_data_type())));
+        seed = hash_dims(seed, desc.get_dims());
+        seed = hash_dims(seed, desc.get_strides());
+        seed = hash_dims(seed, desc.get_inner_blks());
+        seed = hash_dims(seed, desc.get_inner_idxs());
+        return seed;
+    }
+};
+
+struct DescEqual {
+    bool operator()(const dnnl::memory::desc& a, const dnnl::memory::desc& b) const { return a == b; }
+};
+
+// Hashed on (dims, dtype, strides, inner blocks/indices): lookup and insert cost don't grow with
+// the number of distinct descriptors seen, which the old linear scan's cost did. Node-based map,
+// so `intern()`'s returned reference (and the raw `Layout*` callers derive from it) stays valid
+// for the life of the process regardless of later inserts/rehashes.
+std::unordered_map<dnnl::memory::desc, std::shared_ptr<const Layout>, DescHash, DescEqual>& layout_registry() {
+    static std::unordered_map<dnnl::memory::desc, std::shared_ptr<const Layout>, DescHash, DescEqual> registry;
     return registry;
 }
 
 const std::shared_ptr<const Layout>& intern(const dnnl::memory::desc& desc) {
     auto& registry = layout_registry();
-    for (const std::shared_ptr<const Layout>& layout : registry) {
-        if (layout->desc == desc) {
-            return layout;
-        }
+    auto it = registry.find(desc);
+    if (it == registry.end()) {
+        it = registry.emplace(desc, std::make_shared<const Layout>(Layout{desc})).first;
     }
-    registry.push_back(std::make_shared<const Layout>(Layout{desc}));
-    return registry.back();
+    return it->second;
 }
 
 struct LayoutPairHash {
