@@ -12,6 +12,8 @@ add_executable(advanceml_tests
     autograd_test.cpp
     nn_test.cpp
     optim_test.cpp
+    datasets_test.cpp
+    metrics_test.cpp
 )
 target_link_libraries(advanceml_tests PRIVATE advanceml Catch2::Catch2WithMain)
 
