@@ -1,0 +1,28 @@
+---
+id: FIX-0059
+timestamp: 2026-09-17T07:52:18+07:00
+todo_id: TODO-0039
+---
+
+## Prompt
+
+User said "DO TASK 0034" (the AdvanceML TODO-0034 umbrella). Since the umbrella is a tracking entry rather than directly actionable, asked which remaining open area to start — area 5 (datasets/metrics utilities) or area 6 (MNIST example, which depends on area 5) — and the user chose area 5.
+
+## Action
+
+- Filed [TODO-0039](../../../todo/TODO-0039.md) (WIP-cap exception, approved via `AskUserQuestion` — TODO-0011 and TODO-0024 still both in-progress) and branched `feature/TODO-0039-datasets-metrics` off `dev`.
+- Added `advanceml::datasets::load_mnist`/`MnistDataset` (`AdvanceML/include/advanceml/datasets/mnist.hpp`, `AdvanceML/src/datasets/mnist.cpp`) — a from-scratch IDX-format (http://yann.lecun.com/exdb/mnist/) image/label loader with no Python dependency at runtime, normalizing pixels to `[0, 1]` and offering `one_hot_labels()` to match `CrossEntropyLoss`'s target convention.
+- Added `advanceml::metrics::Accuracy` (`AdvanceML/include/advanceml/metrics/accuracy.hpp`, `AdvanceML/src/metrics/accuracy.cpp`) — an update/compute/reset accumulator mirroring `basicml.metrics.Accuracy`'s protocol, comparing row-wise argmax of `pred` against either a one-hot/probability `target` Tensor or a raw integer label vector.
+- Wired both into `AdvanceML/CMakeLists.txt`'s `advanceml` library sources.
+- Added `AdvanceML/tests/datasets_test.cpp` (synthetic in-memory IDX fixture: parses correctly, normalizes pixels, one-hot encodes, rejects a bad magic number) and `AdvanceML/tests/metrics_test.cpp` (single-batch accuracy, multi-batch accumulation, raw-label overload, reset), wired into `AdvanceML/tests/CMakeLists.txt`.
+- `cmake --build AdvanceML/build` and `ctest --test-dir AdvanceML/build --output-on-failure`: 22/22 tests passing (was 13 before this session; TODO-0038's CNN-layer tests are on a separate, not-yet-merged branch and aren't counted here).
+
+## Decision
+
+- No numerical-gradient-check tests here (unlike prior TODO-0034 sub-areas) — neither the IDX loader nor the accuracy metric participates in the autograd graph (accuracy is argmax-based, non-differentiable), so the requirement's gradient-check clause doesn't apply; ordinary unit tests cover correctness instead.
+- `MnistDataset` gained an explicit constructor rather than default-member-initializing a `Tensor` field, because `Tensor`'s default constructor is private (autograd-tracked tensors are meant to always be constructed with data) — matches the existing codebase's "Tensor is never default-constructed" convention rather than loosening `Tensor`'s API.
+- Kept labels as `std::vector<int>` (not a Tensor) since they're an implementation detail for the loader/metric layer, one-hot-encoded into a `Tensor` only when a training loop needs it — avoids forcing an unnecessary Tensor allocation on every load.
+
+## Conclusion
+
+Fixed / landed. Area 5 of the TODO-0034 umbrella (datasets/metrics utilities) is done; remaining open area is 6 (a runnable MNIST CNN example), still blocked on TODO-0038's CNN layers (Conv2D/pooling/BatchNorm2D) merging from its own branch into `dev` first — that branch (`feature/TODO-0038-cnn-layers`) was not yet merged into `dev` as of this session, noted to the user as a heads-up, not fixed here (out of this TODO's scope).

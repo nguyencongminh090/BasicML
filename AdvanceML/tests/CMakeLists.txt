@@ -13,6 +13,8 @@ add_executable(advanceml_tests
     nn_test.cpp
     optim_test.cpp
     cnn_test.cpp
+    datasets_test.cpp
+    metrics_test.cpp
 )
 target_link_libraries(advanceml_tests PRIVATE advanceml Catch2::Catch2WithMain)
 

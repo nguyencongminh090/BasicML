@@ -35,6 +35,8 @@ add_library(advanceml
     src/optim/momentum.cpp
     src/optim/adam.cpp
     src/optim/adamw.cpp
+    src/datasets/mnist.cpp
+    src/metrics/accuracy.cpp
 )
 target_include_directories(advanceml PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
