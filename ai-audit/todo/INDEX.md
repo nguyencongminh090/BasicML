@@ -6,4 +6,3 @@ Read this table first — never scan individual `TODO-*.md` files unless you nee
 |----|--------|----------|--------|--------------------|-------------|---------|
 | TODO-0011 | in-progress | medium | user-report | Animated mini-batch vs full-batch gradient-direction demo (SGD vs Momentum) | [instructions/TODO-0011.md](../instructions/TODO-0011.md) | 2026-09-03 |
 | TODO-0024 | in-progress | medium | user-report | Muon optimizer — momentum + Newton-Schulz orthogonalized update for 2D+ params, wired into optimizer comparison example | [instructions/TODO-0024.md](../instructions/TODO-0024.md) | 2026-09-11 |
-| TODO-0041 | in-progress | medium | user-report | AdvanceML nn/optim/loss parity with BasicML (missing Loss/Optimizer/Layer/Activation classes) | [instructions/TODO-0041.md](../instructions/TODO-0041.md) | 2026-09-17 |
