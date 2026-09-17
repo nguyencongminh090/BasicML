@@ -33,6 +33,11 @@ add_library(advanceml
     src/optim/optimizer.cpp
     src/optim/sgd.cpp
     src/optim/momentum.cpp
+    src/optim/nesterov.cpp
+    src/optim/adagrad.cpp
+    src/optim/adadelta.cpp
+    src/optim/rmsprop.cpp
+    src/optim/muon.cpp
     src/optim/adam.cpp
     src/optim/adamw.cpp
     src/datasets/mnist.cpp
