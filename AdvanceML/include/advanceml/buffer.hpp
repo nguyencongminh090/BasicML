@@ -7,7 +7,43 @@
 #include <utility>
 #include <vector>
 
+#if defined(__linux__) && defined(__GLIBC__)
+#include <malloc.h>
+#endif
+
 namespace advanceml {
+
+namespace detail {
+
+/**
+ * Fixes glibc's mmap threshold instead of leaving it on the default dynamic policy, where every
+ * large free raises the threshold so later same-sized allocations move from mmap (returned to the
+ * OS on free) onto the growing heap (freed blocks mid-heap are not). A training loop that
+ * repeatedly allocates and frees multi-megabyte activation buffers hits this every epoch, so RSS
+ * creeps up over the run even though the live working set is constant. Called once, lazily, from
+ * the first buffer allocation.
+ *
+ * 8 MiB, not a smaller value: a threshold below the largest buffer a hot loop allocates and frees
+ * every call (here, an mb128/16-channel/28x28 f32 activation, ~6.1 MiB) routes that recurring
+ * allocation through mmap/munmap instead of the heap. That trades a real RSS win for a much larger
+ * one: on `train_cnn_mnist`, pinning the threshold at 128 KiB (small enough to force it) cut peak
+ * RSS from ~205 MiB to ~148 MiB but made epoch time ~62% worse (16.1s -> 26.0s for 10 epochs,
+ * `OMP_NUM_THREADS=4`) -- the mmap/page-fault overhead on every allocate/free of that ~6 MiB buffer
+ * dominates the op cost it's part of. 8 MiB sits above that buffer, so training speed is unaffected
+ * (16.6s, matching the untuned baseline) while peak RSS still drops to ~185 MiB, since a fixed
+ * threshold (any fixed value) stops the default dynamic-threshold growth that caused the creep.
+ */
+inline void tune_malloc_once() {
+#if defined(__linux__) && defined(__GLIBC__)
+    static const bool tuned = [] {
+        mallopt(M_MMAP_THRESHOLD, 8 * 1024 * 1024);
+        return true;
+    }();
+    (void)tuned;
+#endif
+}
+
+}  // namespace detail
 
 /**
  * A standard allocator for tensor buffers that
@@ -51,6 +87,7 @@ public:
         if (n > std::numeric_limits<size_t>::max() / sizeof(T)) {
             throw std::bad_array_new_length();
         }
+        detail::tune_malloc_once();
         return static_cast<T*>(::operator new(n * sizeof(T), kAlignment));
     }
 

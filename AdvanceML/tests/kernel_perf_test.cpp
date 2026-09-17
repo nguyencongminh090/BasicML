@@ -250,6 +250,27 @@ TEST_CASE("reading a blocked tensor converts it to plain in place without bumpin
     }
 }
 
+TEST_CASE("relu falls back to a scalar loop for tensors beyond oneDNN's 6D descriptor limit",
+          "[ops][layout][relu]") {
+    // oneDNN's plain_desc only covers 1D-6D; 7D exercises TODO-0047 P4's fallback instead of
+    // relu throwing.
+    Tensor x = Tensor::random_uniform({2, 1, 1, 1, 1, 1, 3}, -1.0f, 1.0f, /*seed=*/490, /*requires_grad=*/true);
+
+    Tensor y = relu(x);
+    REQUIRE(y.shape() == x.shape());
+    for (size_t i = 0; i < x.numel(); ++i) {
+        const float expected = x.data()[i] > 0.0f ? x.data()[i] : 0.0f;
+        REQUIRE(y.data()[i] == Catch::Approx(expected).margin(1e-6f));
+    }
+
+    auto forward_loss = [&]() { return mse_loss(relu(x), Tensor::zeros(x.shape())); };
+    forward_loss().backward();
+
+    constexpr float eps = 1e-2f;
+    constexpr float tolerance = 2e-3f;
+    check_input_gradient(x, [&]() { return forward_loss().data()[0]; }, eps, tolerance);
+}
+
 TEST_CASE("batch_norm2d in eval mode backward treats running statistics as constants", "[ops][batchnorm]") {
     Tensor x = Tensor::random_uniform({2, 3, 4, 4}, -1.0f, 1.0f, /*seed=*/480, /*requires_grad=*/true);
     Tensor gamma = Tensor::random_uniform({3}, 0.5f, 1.5f, /*seed=*/481, /*requires_grad=*/true);
