@@ -818,4 +818,276 @@ Tensor batch_norm2d(const Tensor& x, const Tensor& gamma, const Tensor& beta, st
     return Tensor::from_impl(std::move(out_impl));
 }
 
+Tensor batch_norm1d(const Tensor& x, const Tensor& gamma, const Tensor& beta, std::vector<float>& running_mean,
+                     std::vector<float>& running_var, bool training, float momentum, float eps) {
+    if (x.shape().size() != 2) {
+        throw std::runtime_error("batch_norm1d: expected a 2D (N, C) input tensor");
+    }
+    const size_t N = x.shape()[0];
+    const size_t C = x.shape()[1];
+    if (gamma.shape() != std::vector<size_t>{C} || beta.shape() != std::vector<size_t>{C}) {
+        throw std::runtime_error("batch_norm1d: gamma and beta must be 1D with C entries");
+    }
+    if (running_mean.size() != C || running_var.size() != C) {
+        throw std::runtime_error("batch_norm1d: running_mean and running_var must have C entries");
+    }
+
+    std::vector<float> mean(C);
+    std::vector<float> var(C);
+    if (training) {
+        for (size_t c = 0; c < C; ++c) {
+            float sum = 0.0f;
+            for (size_t n = 0; n < N; ++n) {
+                sum += x.data()[n * C + c];
+            }
+            mean[c] = sum / static_cast<float>(N);
+        }
+        for (size_t c = 0; c < C; ++c) {
+            float sum_sq = 0.0f;
+            for (size_t n = 0; n < N; ++n) {
+                const float d = x.data()[n * C + c] - mean[c];
+                sum_sq += d * d;
+            }
+            var[c] = sum_sq / static_cast<float>(N);
+        }
+        for (size_t c = 0; c < C; ++c) {
+            running_mean[c] = (1.0f - momentum) * running_mean[c] + momentum * mean[c];
+            running_var[c] = (1.0f - momentum) * running_var[c] + momentum * var[c];
+        }
+    } else {
+        mean = running_mean;
+        var = running_var;
+    }
+
+    std::vector<float> std_inv(C);
+    for (size_t c = 0; c < C; ++c) {
+        std_inv[c] = 1.0f / std::sqrt(var[c] + eps);
+    }
+
+    auto xhat = std::make_shared<std::vector<float>>(x.numel());
+    std::vector<float> out_data(x.numel());
+    for (size_t n = 0; n < N; ++n) {
+        for (size_t c = 0; c < C; ++c) {
+            const size_t idx = n * C + c;
+            const float xh = (x.data()[idx] - mean[c]) * std_inv[c];
+            (*xhat)[idx] = xh;
+            out_data[idx] = gamma.data()[c] * xh + beta.data()[c];
+        }
+    }
+
+    auto out_impl = std::make_shared<TensorImpl>();
+    out_impl->data = std::move(out_data);
+    out_impl->shape = x.shape();
+    out_impl->requires_grad = x.requires_grad() || gamma.requires_grad() || beta.requires_grad();
+
+    if (out_impl->requires_grad) {
+        auto node = std::make_shared<Node>();
+        node->inputs = {x.impl(), gamma.impl(), beta.impl()};
+        Tensor gamma_copy = gamma;
+        std::vector<size_t> x_shape = x.shape();
+        node->backward_fn = [xhat, std_inv, gamma_copy, x_shape, N, C,
+                              training](const Tensor& grad_output) -> std::vector<Tensor> {
+            std::vector<float> grad_gamma(C, 0.0f);
+            std::vector<float> grad_beta(C, 0.0f);
+            for (size_t n = 0; n < N; ++n) {
+                for (size_t c = 0; c < C; ++c) {
+                    const size_t idx = n * C + c;
+                    grad_gamma[c] += grad_output.data()[idx] * (*xhat)[idx];
+                    grad_beta[c] += grad_output.data()[idx];
+                }
+            }
+
+            std::vector<float> grad_x(N * C);
+            if (training) {
+                for (size_t c = 0; c < C; ++c) {
+                    float sum_dout = 0.0f;
+                    float sum_dout_xhat = 0.0f;
+                    for (size_t n = 0; n < N; ++n) {
+                        const size_t idx = n * C + c;
+                        sum_dout += grad_output.data()[idx];
+                        sum_dout_xhat += grad_output.data()[idx] * (*xhat)[idx];
+                    }
+                    const float coeff = gamma_copy.data()[c] * std_inv[c] / static_cast<float>(N);
+                    for (size_t n = 0; n < N; ++n) {
+                        const size_t idx = n * C + c;
+                        grad_x[idx] =
+                            coeff * (static_cast<float>(N) * grad_output.data()[idx] - sum_dout - (*xhat)[idx] * sum_dout_xhat);
+                    }
+                }
+            } else {
+                for (size_t c = 0; c < C; ++c) {
+                    const float coeff = gamma_copy.data()[c] * std_inv[c];
+                    for (size_t n = 0; n < N; ++n) {
+                        const size_t idx = n * C + c;
+                        grad_x[idx] = coeff * grad_output.data()[idx];
+                    }
+                }
+            }
+
+            return {
+                Tensor(std::move(grad_x), x_shape),
+                Tensor(std::move(grad_gamma), {C}),
+                Tensor(std::move(grad_beta), {C}),
+            };
+        };
+        out_impl->grad_fn = std::move(node);
+    }
+
+    return Tensor::from_impl(std::move(out_impl));
+}
+
+Tensor global_avg_pool2d(const Tensor& x) {
+    if (x.shape().size() != 4) {
+        throw std::runtime_error("global_avg_pool2d: expected a 4D (N, C, H, W) tensor");
+    }
+    const size_t N = x.shape()[0];
+    const size_t C = x.shape()[1];
+    const size_t H = x.shape()[2];
+    const size_t W = x.shape()[3];
+    const size_t plane = H * W;
+
+    std::vector<float> out_data(N * C);
+    for (size_t n = 0; n < N; ++n) {
+        for (size_t c = 0; c < C; ++c) {
+            const size_t base = (n * C + c) * plane;
+            float sum = 0.0f;
+            for (size_t p = 0; p < plane; ++p) {
+                sum += x.data()[base + p];
+            }
+            out_data[n * C + c] = sum / static_cast<float>(plane);
+        }
+    }
+
+    auto out_impl = std::make_shared<TensorImpl>();
+    out_impl->data = std::move(out_data);
+    out_impl->shape = {N, C, 1, 1};
+    out_impl->requires_grad = x.requires_grad();
+
+    if (out_impl->requires_grad) {
+        auto node = std::make_shared<Node>();
+        node->inputs = {x.impl()};
+        std::vector<size_t> x_shape = x.shape();
+        node->backward_fn = [x_shape, N, C, plane](const Tensor& grad_output) -> std::vector<Tensor> {
+            std::vector<float> grad_x(N * C * plane);
+            for (size_t n = 0; n < N; ++n) {
+                for (size_t c = 0; c < C; ++c) {
+                    const float g = grad_output.data()[n * C + c] / static_cast<float>(plane);
+                    const size_t base = (n * C + c) * plane;
+                    for (size_t p = 0; p < plane; ++p) {
+                        grad_x[base + p] = g;
+                    }
+                }
+            }
+            return {Tensor(std::move(grad_x), x_shape)};
+        };
+        out_impl->grad_fn = std::move(node);
+    }
+
+    return Tensor::from_impl(std::move(out_impl));
+}
+
+Tensor global_max_pool2d(const Tensor& x) {
+    if (x.shape().size() != 4) {
+        throw std::runtime_error("global_max_pool2d: expected a 4D (N, C, H, W) tensor");
+    }
+    const size_t N = x.shape()[0];
+    const size_t C = x.shape()[1];
+    const size_t H = x.shape()[2];
+    const size_t W = x.shape()[3];
+    const size_t plane = H * W;
+
+    std::vector<float> out_data(N * C);
+    auto argmax = std::make_shared<std::vector<size_t>>(N * C);
+    for (size_t n = 0; n < N; ++n) {
+        for (size_t c = 0; c < C; ++c) {
+            const size_t base = (n * C + c) * plane;
+            size_t best = 0;
+            float best_value = x.data()[base];
+            for (size_t p = 1; p < plane; ++p) {
+                if (x.data()[base + p] > best_value) {
+                    best_value = x.data()[base + p];
+                    best = p;
+                }
+            }
+            out_data[n * C + c] = best_value;
+            (*argmax)[n * C + c] = best;
+        }
+    }
+
+    auto out_impl = std::make_shared<TensorImpl>();
+    out_impl->data = std::move(out_data);
+    out_impl->shape = {N, C, 1, 1};
+    out_impl->requires_grad = x.requires_grad();
+
+    if (out_impl->requires_grad) {
+        auto node = std::make_shared<Node>();
+        node->inputs = {x.impl()};
+        std::vector<size_t> x_shape = x.shape();
+        node->backward_fn = [x_shape, argmax, N, C, plane](const Tensor& grad_output) -> std::vector<Tensor> {
+            std::vector<float> grad_x(N * C * plane, 0.0f);
+            for (size_t n = 0; n < N; ++n) {
+                for (size_t c = 0; c < C; ++c) {
+                    const size_t base = (n * C + c) * plane;
+                    grad_x[base + (*argmax)[n * C + c]] = grad_output.data()[n * C + c];
+                }
+            }
+            return {Tensor(std::move(grad_x), x_shape)};
+        };
+        out_impl->grad_fn = std::move(node);
+    }
+
+    return Tensor::from_impl(std::move(out_impl));
+}
+
+Tensor dropout(const Tensor& x, float p, bool training, std::mt19937& rng) {
+    if (p < 0.0f || p >= 1.0f) {
+        throw std::runtime_error("dropout: p must be in [0, 1)");
+    }
+    if (!training || p == 0.0f) {
+        auto out_impl = std::make_shared<TensorImpl>();
+        out_impl->data = x.data();
+        out_impl->shape = x.shape();
+        out_impl->requires_grad = x.requires_grad();
+        if (out_impl->requires_grad) {
+            auto node = std::make_shared<Node>();
+            node->inputs = {x.impl()};
+            node->backward_fn = [](const Tensor& grad_output) -> std::vector<Tensor> {
+                return {Tensor(grad_output.data(), grad_output.shape())};
+            };
+            out_impl->grad_fn = std::move(node);
+        }
+        return Tensor::from_impl(std::move(out_impl));
+    }
+
+    const float keep_prob = 1.0f - p;
+    std::uniform_real_distribution<float> uniform(0.0f, 1.0f);
+    auto mask = std::make_shared<std::vector<float>>(x.numel());
+    std::vector<float> out_data(x.numel());
+    for (size_t i = 0; i < out_data.size(); ++i) {
+        const float keep = uniform(rng) < keep_prob ? 1.0f / keep_prob : 0.0f;
+        (*mask)[i] = keep;
+        out_data[i] = x.data()[i] * keep;
+    }
+
+    auto out_impl = std::make_shared<TensorImpl>();
+    out_impl->data = std::move(out_data);
+    out_impl->shape = x.shape();
+    out_impl->requires_grad = x.requires_grad();
+
+    if (out_impl->requires_grad) {
+        auto node = std::make_shared<Node>();
+        node->inputs = {x.impl()};
+        node->backward_fn = [mask](const Tensor& grad_output) -> std::vector<Tensor> {
+            std::vector<float> grad_x(mask->size());
+            for (size_t i = 0; i < grad_x.size(); ++i) {
+                grad_x[i] = grad_output.data()[i] * (*mask)[i];
+            }
+            return {Tensor(std::move(grad_x), grad_output.shape())};
+        };
+        out_impl->grad_fn = std::move(node);
+    }
+
+    return Tensor::from_impl(std::move(out_impl));
+}
+
 }  // namespace advanceml

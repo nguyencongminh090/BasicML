@@ -2,6 +2,9 @@
 
 #include "advanceml/tensor.hpp"
 
+#include <random>
+#include <vector>
+
 namespace advanceml {
 
 /**
@@ -167,5 +170,49 @@ Tensor flatten(const Tensor& x);
  */
 Tensor batch_norm2d(const Tensor& x, const Tensor& gamma, const Tensor& beta, std::vector<float>& running_mean,
                      std::vector<float>& running_var, bool training, float momentum = 0.1f, float eps = 1e-5f);
+
+/**
+ * 1D batch normalization over a `(N, C)` tensor, normalizing each feature
+ * across the batch axis `N`: `y = gamma * (x - mean) / sqrt(var + eps) +
+ * beta`. Same semantics as `batch_norm2d` with `H = W = 1`.
+ *
+ * @throws std::runtime_error if `x` is not 2D, `gamma`/`beta` are not 1D
+ * with `C` entries, or `running_mean`/`running_var` do not have `C` entries.
+ */
+Tensor batch_norm1d(const Tensor& x, const Tensor& gamma, const Tensor& beta, std::vector<float>& running_mean,
+                     std::vector<float>& running_var, bool training, float momentum = 0.1f, float eps = 1e-5f);
+
+/**
+ * Global average pooling over a `(N, C, H, W)` tensor's spatial dimensions:
+ * output is `(N, C, 1, 1)`, `out[n, c] = mean_{h, w}(x[n, c, h, w])`.
+ * Backward broadcasts the upstream gradient back evenly: `dL/dx[n, c, h, w]
+ * = dL/d(out[n, c]) / (H * W)`.
+ *
+ * @throws std::runtime_error if `x` is not 4D.
+ */
+Tensor global_avg_pool2d(const Tensor& x);
+
+/**
+ * Global max pooling over a `(N, C, H, W)` tensor's spatial dimensions:
+ * output is `(N, C, 1, 1)`, `out[n, c] = max_{h, w}(x[n, c, h, w])`.
+ * Backward routes the whole upstream gradient to each `(n, c)` slice's
+ * argmax location, zero elsewhere.
+ *
+ * @throws std::runtime_error if `x` is not 4D.
+ */
+Tensor global_max_pool2d(const Tensor& x);
+
+/**
+ * Inverted dropout, elementwise, over any shape: in training mode, each
+ * element is independently zeroed with probability `p` (`rng` draws the
+ * per-element decisions) and the survivors are scaled by `1 / (1 - p)` so
+ * the output's expectation matches `x`; in inference mode (`training ==
+ * false`) or when `p == 0`, `x` passes through unchanged. Backward applies
+ * the same mask/scale used in forward (or the identity, in the unchanged
+ * case).
+ *
+ * @throws std::runtime_error if `p` is not in `[0, 1)`.
+ */
+Tensor dropout(const Tensor& x, float p, bool training, std::mt19937& rng);
 
 }  // namespace advanceml

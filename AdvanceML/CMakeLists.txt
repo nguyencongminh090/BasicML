@@ -30,6 +30,10 @@ add_library(advanceml
     src/nn/avg_pool2d.cpp
     src/nn/flatten.cpp
     src/nn/batch_norm2d.cpp
+    src/nn/batch_norm1d.cpp
+    src/nn/global_avg_pool2d.cpp
+    src/nn/global_max_pool2d.cpp
+    src/nn/dropout.cpp
     src/optim/optimizer.cpp
     src/optim/sgd.cpp
     src/optim/momentum.cpp
