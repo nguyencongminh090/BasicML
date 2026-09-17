@@ -6,5 +6,3 @@ Read this table first — never scan individual `TODO-*.md` files unless you nee
 |----|--------|----------|--------|--------------------|-------------|---------|
 | TODO-0011 | in-progress | medium | user-report | Animated mini-batch vs full-batch gradient-direction demo (SGD vs Momentum) | [instructions/TODO-0011.md](../instructions/TODO-0011.md) | 2026-09-03 |
 | TODO-0024 | in-progress | medium | user-report | Muon optimizer — momentum + Newton-Schulz orthogonalized update for 2D+ params, wired into optimizer comparison example | [instructions/TODO-0024.md](../instructions/TODO-0024.md) | 2026-09-11 |
-| TODO-0034 | open | high | user-report | AdvanceML umbrella: CNN layers (Conv2D/pool/BatchNorm2D), more activations/losses/optimizers, datasets/metrics helpers, MNIST CNN example — bring component library to BasicML parity | [instructions/TODO-0034.md](../instructions/TODO-0034.md) | 2026-09-17 |
-| TODO-0040 | in-progress | high | user-report | AdvanceML MNIST CNN example (area 6 of TODO-0034) + rough perf comparison vs BasicML's `train_cnn_mnist.py` | [instructions/TODO-0040.md](../instructions/TODO-0040.md) | 2026-09-17 |
