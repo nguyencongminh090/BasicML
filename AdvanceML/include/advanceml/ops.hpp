@@ -71,6 +71,83 @@ Tensor sigmoid(const Tensor& x);
 Tensor leaky_relu(const Tensor& x, float negative_slope = 0.01f);
 
 /**
+ * Hyperbolic tangent, elementwise: `tanh(x) = (e^x - e^-x) / (e^x + e^-x)`.
+ * Backward: `dL/dx = dL/dy * (1 - y^2)`, reusing the forward output `y`.
+ */
+Tensor tanh(const Tensor& x);
+
+/**
+ * Identity, elementwise: `identity(x) = x`. Backward: `dL/dx = dL/dy`.
+ */
+Tensor identity(const Tensor& x);
+
+/**
+ * Parametric rectified linear unit, elementwise: `prelu(x) = x` where `x >
+ * 0`, else `a_c * x`, where `c` is `0` if `a` has one entry (a single
+ * shared slope), else `i % a.numel()` for flat index `i` (broadcasting
+ * `a` over `x`'s trailing axis, matching `basicml.nn.activation.PReLU`).
+ * Backward: `dL/dx = dL/dy` where `x > 0`, else `a_c * dL/dy`; `dL/da_c =
+ * sum` over elements sharing slope `c`, of `dL/dy * x` where `x <= 0`.
+ *
+ * @throws std::runtime_error if `a.numel()` is neither `1` nor `x.shape().back()`.
+ */
+Tensor prelu(const Tensor& x, const Tensor& a);
+
+/**
+ * Exponential linear unit, elementwise: `elu(x) = x` where `x > 0`, else
+ * `alpha * (exp(x) - 1)`.
+ * Backward: `dL/dx = dL/dy` where `x > 0`, else `dL/dy * alpha * exp(x)`.
+ */
+Tensor elu(const Tensor& x, float alpha = 1.0f);
+
+/**
+ * Scaled exponential linear unit, elementwise, with the fixed constants
+ * from Klambauer et al.: `selu(x) = scale * x` where `x > 0`, else `scale
+ * * alpha * (exp(x) - 1)`, `alpha ~= 1.6732632423543772`, `scale ~=
+ * 1.0507009873554805`.
+ * Backward: `dL/dx = dL/dy * scale` where `x > 0`, else `dL/dy * scale *
+ * alpha * exp(x)`.
+ */
+Tensor selu(const Tensor& x);
+
+/**
+ * Softplus, elementwise, numerically stable: `softplus(x) = log(1 +
+ * exp(x))`, computed as `max(x, 0) + log1p(exp(-|x|))`.
+ * Backward: `dL/dx = dL/dy * sigmoid(x)`.
+ */
+Tensor softplus(const Tensor& x);
+
+/**
+ * Swish (SiLU when `beta = 1`), elementwise: `swish(x) = x * sigmoid(beta *
+ * x)`.
+ * Backward: `dL/dx = dL/dy * (sig + beta * x * sig * (1 - sig))`, where
+ * `sig = sigmoid(beta * x)`.
+ */
+Tensor swish(const Tensor& x, float beta = 1.0f);
+
+/**
+ * Mish, elementwise: `mish(x) = x * tanh(softplus(x))`.
+ * Backward: `dL/dx = dL/dy * (t + x * (1 - t^2) * sigmoid(x))`, where `t =
+ * tanh(softplus(x))`.
+ */
+Tensor mish(const Tensor& x);
+
+/**
+ * Hard tanh, elementwise: `hardtanh(x) = clip(x, min_val, max_val)`.
+ * Backward: `dL/dx = dL/dy` where `min_val < x < max_val`, else `0`.
+ *
+ * @throws std::runtime_error if `max_val <= min_val`.
+ */
+Tensor hardtanh(const Tensor& x, float min_val = -1.0f, float max_val = 1.0f);
+
+/**
+ * Hard sigmoid, elementwise, the piecewise-linear sigmoid approximation:
+ * `hardsigmoid(x) = clip(x / 6 + 0.5, 0, 1)`.
+ * Backward: `dL/dx = dL/dy / 6` where `-3 < x < 3`, else `0`.
+ */
+Tensor hardsigmoid(const Tensor& x);
+
+/**
  * Gaussian Error Linear Unit, elementwise, exact (erf-based) form:
  * `gelu(x) = x * 0.5 * (1 + erf(x / sqrt(2)))`.
  * Backward: `dL/dx = dL/dy * (0.5 * (1 + erf(x / sqrt(2))) + x * phi(x))`,

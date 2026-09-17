@@ -18,6 +18,7 @@ add_executable(advanceml_tests
     loss_parity_test.cpp
     optim_parity_test.cpp
     layer_parity_test.cpp
+    activation_parity_test.cpp
 )
 target_link_libraries(advanceml_tests PRIVATE advanceml Catch2::Catch2WithMain)
 
