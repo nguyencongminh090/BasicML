@@ -78,6 +78,9 @@ Tensor tanh(const Tensor& x);
 
 /**
  * Identity, elementwise: `identity(x) = x`. Backward: `dL/dx = dL/dy`.
+ *
+ * The result is a view sharing `x`'s storage (no copy), so a write through
+ * either is visible through the other.
  */
 Tensor identity(const Tensor& x);
 
@@ -186,9 +189,11 @@ Tensor cross_entropy_loss(const Tensor& pred, const Tensor& target);
  * output is `(N, out_channels, Hout, Wout)` with
  * `Hout = (H + 2*padding - kh) / stride + 1` (`Wout` analogous).
  *
- * Forward runs through oneDNN's `dnnl::convolution_forward` primitive;
- * backward (w.r.t. `x`, `weight`, and `bias`) through
- * `dnnl::convolution_backward_data` and `convolution_backward_weights`.
+ * Forward runs through oneDNN's `dnnl::convolution_forward` primitive
+ * (`forward_inference` when no graph is recorded, e.g. under `NoGradGuard`);
+ * backward through `dnnl::convolution_backward_data` (w.r.t. `x`, skipped
+ * when `x` needs no gradient, such as a first layer's data batch) and
+ * `convolution_backward_weights` (w.r.t. `weight` and `bias`).
  *
  * @param stride Stride applied to both spatial dimensions.
  * @param padding Zero-padding applied to both spatial dimensions, both sides.
@@ -221,9 +226,9 @@ Tensor avg_pool2d(const Tensor& x, size_t kernel_size, size_t stride);
 
 /**
  * Flattens every dimension but the first (batch) one: `(N, ...)` becomes
- * `(N, prod(...))`. A pure reshape: the underlying data is copied
- * unchanged, and backward reshapes the upstream gradient back to `x`'s
- * original shape.
+ * `(N, prod(...))`. A pure reshape: the result is a view sharing `x`'s
+ * storage (no copy), and backward returns a view of the upstream gradient
+ * reshaped back to `x`'s original shape.
  *
  * @throws std::runtime_error if `x` has no dimensions.
  */
@@ -284,9 +289,9 @@ Tensor global_max_pool2d(const Tensor& x);
  * element is independently zeroed with probability `p` (`rng` draws the
  * per-element decisions) and the survivors are scaled by `1 / (1 - p)` so
  * the output's expectation matches `x`; in inference mode (`training ==
- * false`) or when `p == 0`, `x` passes through unchanged. Backward applies
- * the same mask/scale used in forward (or the identity, in the unchanged
- * case).
+ * false`) or when `p == 0`, `x` passes through unchanged as a view sharing
+ * its storage. Backward applies the same mask/scale used in forward (or the
+ * identity, in the unchanged case).
  *
  * @throws std::runtime_error if `p` is not in `[0, 1)`.
  */

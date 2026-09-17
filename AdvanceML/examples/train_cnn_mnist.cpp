@@ -105,6 +105,9 @@ struct EpochLog {
 std::pair<float, float> evaluate(Model& model, CrossEntropyLoss& criterion,
                                   const datasets::MnistDataset& data, const Tensor& targets) {
     set_training(model, false);
+    // Evaluation never calls backward(); without the guard every batch would still build a full
+    // graph and keep its saved activations and BatchNorm xhat buffers alive.
+    NoGradGuard no_grad;
     metrics::Accuracy accuracy;
     float total_loss = 0.0f;
     size_t n_batches = 0;

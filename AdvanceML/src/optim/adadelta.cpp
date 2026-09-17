@@ -21,14 +21,15 @@ void Adadelta::step() {
             continue;
         }
         Tensor grad = param.grad();
+        std::vector<float>& values = param.mutable_data();
         std::vector<float>& mean_sq_grad = mean_sq_grad_[i];
         std::vector<float>& mean_sq_step = mean_sq_step_[i];
-        for (size_t j = 0; j < param.data().size(); ++j) {
+        for (size_t j = 0; j < values.size(); ++j) {
             const float g = grad.data()[j];
             mean_sq_grad[j] = rho_ * mean_sq_grad[j] + (1.0f - rho_) * g * g;
             const float delta = std::sqrt(mean_sq_step[j] + eps_) / std::sqrt(mean_sq_grad[j] + eps_) * g;
             mean_sq_step[j] = rho_ * mean_sq_step[j] + (1.0f - rho_) * delta * delta;
-            param.data()[j] -= learning_rate_ * delta;
+            values[j] -= learning_rate_ * delta;
         }
     }
 }

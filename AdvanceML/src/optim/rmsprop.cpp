@@ -19,11 +19,12 @@ void RMSprop::step() {
             continue;
         }
         Tensor grad = param.grad();
+        std::vector<float>& values = param.mutable_data();
         std::vector<float>& mean_sq = mean_sq_[i];
-        for (size_t j = 0; j < param.data().size(); ++j) {
+        for (size_t j = 0; j < values.size(); ++j) {
             const float g = grad.data()[j];
             mean_sq[j] = rho_ * mean_sq[j] + (1.0f - rho_) * g * g;
-            param.data()[j] -= learning_rate_ * g / (std::sqrt(mean_sq[j]) + eps_);
+            values[j] -= learning_rate_ * g / (std::sqrt(mean_sq[j]) + eps_);
         }
     }
 }

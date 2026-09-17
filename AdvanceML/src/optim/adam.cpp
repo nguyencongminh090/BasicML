@@ -25,14 +25,15 @@ void Adam::step() {
             continue;
         }
         Tensor grad = param.grad();
+        std::vector<float>& values = param.mutable_data();
         std::vector<float>& m = first_moment_[i];
         std::vector<float>& v = second_moment_[i];
-        for (size_t j = 0; j < param.data().size(); ++j) {
+        for (size_t j = 0; j < values.size(); ++j) {
             m[j] = beta1_ * m[j] + (1.0f - beta1_) * grad.data()[j];
             v[j] = beta2_ * v[j] + (1.0f - beta2_) * grad.data()[j] * grad.data()[j];
             const float m_hat = m[j] / bias_correction1;
             const float v_hat = v[j] / bias_correction2;
-            param.data()[j] -= learning_rate_ * m_hat / (std::sqrt(v_hat) + eps_);
+            values[j] -= learning_rate_ * m_hat / (std::sqrt(v_hat) + eps_);
         }
     }
 }

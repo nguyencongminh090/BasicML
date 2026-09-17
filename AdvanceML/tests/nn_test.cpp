@@ -53,7 +53,7 @@ void check_activation_gradient(const std::function<Tensor(const Tensor&)>& activ
 
     for (size_t i = 0; i < x.numel(); ++i) {
         const float analytic = grad.data()[i];
-        const float numeric = numerical_grad(x.data()[i], loss_fn, eps);
+        const float numeric = numerical_grad(x.mutable_data()[i], loss_fn, eps);
         REQUIRE(analytic == Catch::Approx(numeric).margin(tolerance));
     }
 }
@@ -73,7 +73,7 @@ void check_loss_gradient(const std::function<Tensor(const Tensor&, const Tensor&
 
     for (size_t i = 0; i < pred.numel(); ++i) {
         const float analytic = grad.data()[i];
-        const float numeric = numerical_grad(pred.data()[i], scalar_loss, eps);
+        const float numeric = numerical_grad(pred.mutable_data()[i], scalar_loss, eps);
         REQUIRE(analytic == Catch::Approx(numeric).margin(tolerance));
     }
 }

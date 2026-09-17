@@ -1,60 +1,171 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
-#include <functional>
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace advanceml {
 
 class Tensor;
+class TensorImpl;
+
+/** The largest number of inputs (and of saved tensors) any single op records. */
+inline constexpr size_t kMaxNodeInputs = 3;
+
+/** One flag per recorded input: whether that input needs a gradient. */
+using NeedsInputGrad = std::array<bool, kMaxNodeInputs>;
+
+/**
+ * One optional gradient per recorded input, in input order.
+ * `std::nullopt` means "not computed"; a backward function leaves an entry
+ * empty when the matching `NeedsInputGrad` flag is false.
+ */
+using InputGrads = std::array<std::optional<Tensor>, kMaxNodeInputs>;
+
+/**
+ * The flat float buffer behind one or more tensors.
+ *
+ * Several `TensorImpl`s may share one `Storage` (a reshape view such as
+ * `flatten` shares its input's buffer). `version` counts in-place writes made
+ * through `Tensor::mutable_data()`, so backward can detect that a tensor it
+ * saved was modified after being saved.
+ */
+struct Storage {
+    std::vector<float> data;
+    uint64_t version = 0;
+};
+
+/** A storage an op saved for backward, plus its version at save time. */
+struct SavedVersion {
+    std::shared_ptr<Storage> storage;
+    uint64_t version = 0;
+};
 
 /**
  * One recorded operation in the autograd graph.
  *
- * `inputs` are the tensors the op read; `backward_fn` maps the
- * upstream gradient (w.r.t. this node's output) to one gradient per
- * entry in `inputs`, in the same order. Mirrors BasicML's
- * "forward() caches what backward() needs" convention, except the
- * caching and chaining here happen automatically per op rather than
- * being hand-written per layer.
+ * `inputs[0..num_inputs)` are the tensors the op read, and
+ * `needs_input_grad[i]` records whether `inputs[i]` required a gradient when
+ * the op ran; backward never computes or routes gradients to inputs with the
+ * flag cleared. `apply()` maps the upstream gradient (w.r.t. this node's
+ * output) to one optional gradient per input, in the same order.
+ *
+ * Concrete nodes are created by `detail::record()`, which stores the op's
+ * backward lambda and its saved state in the same allocation as the node.
+ * After a non-retaining `Tensor::backward()` runs a node, `release()` drops
+ * its saved state and input edges; running it again then throws.
  */
-struct Node {
-    std::vector<std::shared_ptr<class TensorImpl>> inputs;
-    std::function<std::vector<Tensor>(const Tensor& grad_output)> backward_fn;
+class Node {
+public:
+    Node() = default;
+    Node(const Node&) = delete;
+    Node& operator=(const Node&) = delete;
+
+    /** Tears the upstream graph down iteratively, so very deep graphs cannot overflow the call stack. */
+    virtual ~Node();
+
+    std::array<std::shared_ptr<TensorImpl>, kMaxNodeInputs> inputs{};
+    NeedsInputGrad needs_input_grad{};
+    size_t num_inputs = 0;
+    std::array<SavedVersion, kMaxNodeInputs> saved{};
+    size_t num_saved = 0;
+
+    /**
+     * Computes the gradient w.r.t. each input from `grad_output`, the gradient
+     * w.r.t. this node's output.
+     *
+     * @return One optional gradient per input; entries whose `needs_input_grad` flag is false stay empty.
+     */
+    [[nodiscard]] virtual InputGrads apply(const Tensor& grad_output) = 0;
+
+    /** Drops the backward state this node saved (closure captures and `saved`), keeping its input edges. */
+    virtual void release_saved() noexcept;
+
+    /** Drops saved state and input edges, and marks the node as released. */
+    void release() noexcept;
+
+    /** @return Whether `release()` has run. */
+    [[nodiscard]] bool released() const noexcept;
+
+    /**
+     * @throws std::runtime_error if the node was released, or if any saved
+     * storage's version changed since it was saved (an in-place write through
+     * `Tensor::mutable_data()` would make the gradient silently wrong).
+     */
+    void check_saved_versions() const;
+
+private:
+    bool released_ = false;
 };
 
 /**
- * Storage + graph-node bookkeeping backing a Tensor value handle.
+ * Shape, storage and graph bookkeeping behind a `Tensor` value handle.
  *
- * `grad_fn` is null for leaves (parameters, inputs) and set by
- * whichever op produced this tensor. `grad` is allocated lazily, on
- * first accumulation during backward().
+ * `grad_fn` is null for leaves (parameters, inputs) and for any tensor
+ * produced while recording was off; otherwise it is the node of the op that
+ * produced this tensor. `grad` is a leaf's accumulated gradient, set on first
+ * accumulation during backward. `visit_mark` and `pending_grad` are
+ * `Tensor::backward()`'s per-pass scratch space (a visited marker for the
+ * topological sort and the gradient accumulated so far for this tensor), which
+ * replace hash maps keyed on tensor addresses.
  */
 class TensorImpl {
 public:
-    std::vector<float> data;
+    std::shared_ptr<Storage> storage;
     std::vector<size_t> shape;
     std::shared_ptr<TensorImpl> grad;
     bool requires_grad = false;
     std::shared_ptr<Node> grad_fn;
+    uint64_t visit_mark = 0;
+    std::shared_ptr<TensorImpl> pending_grad;
 };
 
 /**
- * An autograd-tracked, dense float32 tensor (row-major, 1D or 2D in
- * this milestone).
+ * @return Whether ops currently record autograd nodes on this thread (true
+ * unless a `NoGradGuard` is alive).
+ */
+[[nodiscard]] bool is_grad_enabled() noexcept;
+
+/**
+ * RAII switch that turns graph recording off on the current thread for its
+ * lifetime, restoring the previous mode on destruction (guards nest).
  *
- * Ops (`operator+`, `matmul`, `relu`, `mse_loss`, ...) build a
- * define-by-run computation graph as they execute: each produces a
- * new Tensor whose `TensorImpl::grad_fn` records how to route the
- * upstream gradient back to its inputs. Calling `backward()` on a
- * scalar output tensor walks that graph via the chain rule and
- * accumulates into each leaf parameter's `.grad`, in contrast to
- * BasicML's hand-written per-layer `backward()`.
+ * While it is alive, every op returns a plain tensor with
+ * `requires_grad() == false` and no `grad_fn`, so no saved tensors are kept
+ * alive, and oneDNN-backed ops use `prop_kind::forward_inference`. Use it for
+ * evaluation loops.
+ */
+class NoGradGuard {
+public:
+    NoGradGuard() noexcept;
+    ~NoGradGuard();
+    NoGradGuard(const NoGradGuard&) = delete;
+    NoGradGuard& operator=(const NoGradGuard&) = delete;
+
+private:
+    bool previous_;
+};
+
+/**
+ * An autograd-tracked, dense float32 tensor (row-major).
+ *
+ * Ops (`operator+`, `matmul`, `relu`, `mse_loss`, ...) build a define-by-run
+ * computation graph as they execute: each produces a new Tensor whose
+ * `TensorImpl::grad_fn` records how to route the upstream gradient back to its
+ * inputs. Calling `backward()` on a scalar output tensor walks that graph via
+ * the chain rule and accumulates into each leaf parameter's `.grad`, in
+ * contrast to BasicML's hand-written per-layer `backward()`.
+ *
+ * Copying a Tensor copies the handle, not the data. Reshape views
+ * (`flatten`, `identity`, inference-mode `dropout`) share storage with their
+ * input, so a write through one is visible through the other.
  */
 class Tensor {
 public:
-    /** Constructs a tensor from row-major `data` with the given `shape`. */
+    /** Constructs a tensor from row-major `data` with the given `shape`. @throws std::runtime_error if the sizes disagree. */
     Tensor(std::vector<float> data, std::vector<size_t> shape, bool requires_grad = false);
 
     /** Returns a `shape`-shaped tensor of zeros. */
@@ -63,34 +174,67 @@ public:
     /** Returns a `shape`-shaped tensor with entries drawn uniformly from `[low, high)`. */
     static Tensor random_uniform(std::vector<size_t> shape, float low, float high, unsigned seed, bool requires_grad = false);
 
-    /** Wraps an existing `TensorImpl` (used by op implementations to attach a `grad_fn`). */
+    /** Wraps an existing `TensorImpl` (used by op implementations). */
     static Tensor from_impl(std::shared_ptr<TensorImpl> impl);
 
-    /** @returns The total number of elements (product of `shape()`). */
+    /** @return The total number of elements (product of `shape()`). */
     [[nodiscard]] size_t numel() const noexcept;
 
     [[nodiscard]] const std::vector<size_t>& shape() const noexcept;
-    [[nodiscard]] std::vector<float>& data() noexcept;
+
+    /** @return Read-only access to the row-major element buffer. */
     [[nodiscard]] const std::vector<float>& data() const noexcept;
+
+    /**
+     * @return Writable access to the row-major element buffer.
+     *
+     * Counts as an in-place write: bumps the storage version, so a later
+     * `backward()` through an op that saved this tensor (or a view sharing its
+     * storage) throws instead of computing a wrong gradient. Use `data()` for
+     * reads.
+     */
+    [[nodiscard]] std::vector<float>& mutable_data() noexcept;
+
+    /** @return How many times `mutable_data()` was called on this tensor's storage. */
+    [[nodiscard]] uint64_t version() const noexcept;
+
     [[nodiscard]] bool requires_grad() const noexcept;
 
-    /** @returns Whether backward() has accumulated a gradient into this (leaf) tensor. */
+    /** @return Whether backward() has accumulated a gradient into this (leaf) tensor. */
     [[nodiscard]] bool has_grad() const noexcept;
 
-    /** @returns The accumulated gradient. @throws std::runtime_error if `has_grad()` is false. */
+    /** @return The accumulated gradient. @throws std::runtime_error if `has_grad()` is false. */
     [[nodiscard]] Tensor grad() const;
 
-    /** Resets the accumulated gradient to unset (equivalent to BasicML's `zero_grad()`). */
+    /**
+     * Resets the accumulated gradient to unset (equivalent to BasicML's
+     * `zero_grad()`). The next backward adopts the incoming gradient buffer
+     * instead of allocating and copying into a new one.
+     */
     void zero_grad();
 
     /**
-     * Runs backward from this (scalar) tensor, accumulating dL/dx
-     * into `.grad` for every leaf tensor with `requires_grad() ==
-     * true` reachable through the graph.
+     * Runs backward from this (scalar) tensor, accumulating dL/dx into `.grad`
+     * for every leaf tensor with `requires_grad() == true` reachable through
+     * the graph.
      *
-     * @throws std::runtime_error if this tensor is not a scalar (numel() != 1).
+     * Gradients are only computed for inputs that required one when the op
+     * ran; each intermediate gradient is freed as soon as the node consuming
+     * it has run. Unless `retain_graph` is true, each node's saved tensors and
+     * input edges are released right after it runs, so activation memory is
+     * freed during the pass and a second backward through the same graph
+     * throws.
+     *
+     * Double backward (gradients of gradients) is not supported: backward
+     * functions run with recording off, so the gradients they return carry no
+     * graph.
+     *
+     * @param retain_graph Keep saved tensors and edges so the graph can be backpropagated again.
+     * @throws std::runtime_error if this tensor is not a scalar (numel() != 1),
+     * if the graph was already released by an earlier backward, or if a tensor
+     * saved for backward was modified in place via `mutable_data()`.
      */
-    void backward();
+    void backward(bool retain_graph = false);
 
     [[nodiscard]] const std::shared_ptr<TensorImpl>& impl() const noexcept;
 

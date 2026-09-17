@@ -1,5 +1,7 @@
 #include "advanceml/ops.hpp"
 
+#include "advanceml/detail/autograd.hpp"
+
 #include <dnnl.hpp>
 
 #include <algorithm>
@@ -120,9 +122,11 @@ std::vector<float> transpose(const std::vector<float>& data, size_t rows, size_t
 struct PoolKey {
     size_t N, C, H, W, kernel_size, stride;
     dnnl::algorithm algorithm;
+    dnnl::prop_kind prop_kind;
     bool operator==(const PoolKey& other) const {
         return N == other.N && C == other.C && H == other.H && W == other.W &&
-               kernel_size == other.kernel_size && stride == other.stride && algorithm == other.algorithm;
+               kernel_size == other.kernel_size && stride == other.stride && algorithm == other.algorithm &&
+               prop_kind == other.prop_kind;
     }
 };
 
@@ -135,6 +139,7 @@ struct PoolKeyHash {
         h = hash_combine(h, std::hash<size_t>{}(key.kernel_size));
         h = hash_combine(h, std::hash<size_t>{}(key.stride));
         h = hash_combine(h, std::hash<size_t>{}(static_cast<size_t>(key.algorithm)));
+        h = hash_combine(h, std::hash<size_t>{}(static_cast<size_t>(key.prop_kind)));
         return h;
     }
 };
@@ -180,13 +185,18 @@ Tensor pool2d(const Tensor& x, size_t kernel_size, size_t stride, dnnl::algorith
     auto src_md = memory::desc(src_dims, memory::data_type::f32, memory::format_tag::nchw);
     auto dst_md = memory::desc(dst_dims, memory::data_type::f32, memory::format_tag::nchw);
 
-    PoolKey key{N, C, H, W, kernel_size, stride, algorithm};
+    // Inference primitives skip the max-pool argmax workspace that only backward needs.
+    const bool record_graph = detail::should_record({&x});
+    const dnnl::prop_kind prop_kind =
+        record_graph ? dnnl::prop_kind::forward_training : dnnl::prop_kind::forward_inference;
+
+    PoolKey key{N, C, H, W, kernel_size, stride, algorithm, prop_kind};
     auto& cache = pool_cache();
     auto cache_it = cache.find(key);
     if (cache_it == cache.end()) {
-        auto fwd_pd = dnnl::pooling_forward::primitive_desc(engine, dnnl::prop_kind::forward_training, algorithm,
-                                                             src_md, dst_md, strides_dims, kernel_dims,
-                                                             dilation_dims, padding_dims, padding_dims);
+        auto fwd_pd = dnnl::pooling_forward::primitive_desc(engine, prop_kind, algorithm, src_md, dst_md,
+                                                             strides_dims, kernel_dims, dilation_dims, padding_dims,
+                                                             padding_dims);
         dnnl::pooling_forward fwd_prim(fwd_pd);
         cache_it = cache.emplace(key, PoolCacheEntry{std::move(fwd_pd), std::move(fwd_prim), std::nullopt, std::nullopt}).first;
     }
@@ -197,7 +207,7 @@ Tensor pool2d(const Tensor& x, size_t kernel_size, size_t stride, dnnl::algorith
     std::vector<float> out_data(N * C * h_out * w_out);
     memory dst_mem(fwd_pd.dst_desc(), engine, out_data.data());
 
-    const bool needs_workspace = algorithm == dnnl::algorithm::pooling_max;
+    const bool needs_workspace = record_graph && algorithm == dnnl::algorithm::pooling_max;
     auto workspace_data = std::make_shared<std::vector<uint8_t>>(needs_workspace ? fwd_pd.workspace_desc().get_size() : 0);
     std::unordered_map<int, memory> fwd_args = {{DNNL_ARG_SRC, src_mem}, {DNNL_ARG_DST, dst_mem}};
     if (needs_workspace) {
@@ -206,17 +216,11 @@ Tensor pool2d(const Tensor& x, size_t kernel_size, size_t stride, dnnl::algorith
     entry.fwd_prim.execute(cpu_stream(), fwd_args);
     cpu_stream().wait();
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = std::move(out_data);
-    out_impl->shape = {N, C, h_out, w_out};
-    out_impl->requires_grad = x.requires_grad();
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {x.impl()};
-        std::vector<size_t> x_shape = x.shape();
-        node->backward_fn = [key, algorithm, strides_dims, kernel_dims, dilation_dims, padding_dims, x_shape,
-                              workspace_data, needs_workspace](const Tensor& grad_output) -> std::vector<Tensor> {
+    Tensor out(std::move(out_data), {N, C, h_out, w_out});
+    if (record_graph) {
+        detail::record(out, {&x}, {}, [key, algorithm, strides_dims, kernel_dims, dilation_dims, padding_dims,
+                                        x_shape = x.shape(), workspace_data,
+                                        needs_workspace](const Tensor& grad_output) -> InputGrads {
             dnnl::engine& engine = cpu_engine();
             PoolCacheEntry& entry = pool_cache().at(key);
             if (!entry.bwd_pd.has_value()) {
@@ -240,18 +244,18 @@ Tensor pool2d(const Tensor& x, size_t kernel_size, size_t stride, dnnl::algorith
             cpu_stream().wait();
 
             return {Tensor(std::move(grad_x_data), x_shape)};
-        };
-        out_impl->grad_fn = std::move(node);
+        });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 struct ConvKey {
     size_t N, c_in, H, W, c_out, kh, kw, stride, padding;
+    dnnl::prop_kind prop_kind;
     bool operator==(const ConvKey& other) const {
         return N == other.N && c_in == other.c_in && H == other.H && W == other.W && c_out == other.c_out &&
-               kh == other.kh && kw == other.kw && stride == other.stride && padding == other.padding;
+               kh == other.kh && kw == other.kw && stride == other.stride && padding == other.padding &&
+               prop_kind == other.prop_kind;
     }
 };
 
@@ -266,6 +270,7 @@ struct ConvKeyHash {
         h = hash_combine(h, std::hash<size_t>{}(key.kw));
         h = hash_combine(h, std::hash<size_t>{}(key.stride));
         h = hash_combine(h, std::hash<size_t>{}(key.padding));
+        h = hash_combine(h, std::hash<size_t>{}(static_cast<size_t>(key.prop_kind)));
         return h;
     }
 };
@@ -294,59 +299,45 @@ Tensor matmul(const Tensor& a, const Tensor& b) {
     const size_t k = a.shape()[1];
     const size_t n = b.shape()[1];
 
-    std::vector<float> out_data = gemm(a.data().data(), b.data().data(), m, k, n);
-
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = std::move(out_data);
-    out_impl->shape = {m, n};
-    out_impl->requires_grad = a.requires_grad() || b.requires_grad();
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {a.impl(), b.impl()};
-        Tensor a_copy = a;
-        Tensor b_copy = b;
-        node->backward_fn = [a_copy, b_copy, m, k, n](const Tensor& grad_output) -> std::vector<Tensor> {
-            std::vector<float> b_t = transpose(b_copy.data(), k, n);
-            std::vector<float> grad_a_data = gemm(grad_output.data().data(), b_t.data(), m, n, k);
-
-            std::vector<float> a_t = transpose(a_copy.data(), m, k);
-            std::vector<float> grad_b_data = gemm(a_t.data(), grad_output.data().data(), k, m, n);
-
-            return {Tensor(std::move(grad_a_data), {m, k}), Tensor(std::move(grad_b_data), {k, n})};
-        };
-        out_impl->grad_fn = std::move(node);
+    Tensor out(gemm(a.data().data(), b.data().data(), m, k, n), {m, n});
+    if (detail::should_record({&a, &b})) {
+        detail::record(out, {&a, &b}, {&a, &b},
+                       [a, b, m, k, n](const Tensor& grad_output, const NeedsInputGrad& needs) -> InputGrads {
+                           InputGrads grads;
+                           if (needs[0]) {
+                               std::vector<float> b_t = transpose(b.data(), k, n);
+                               grads[0] = Tensor(gemm(grad_output.data().data(), b_t.data(), m, n, k), {m, k});
+                           }
+                           if (needs[1]) {
+                               std::vector<float> a_t = transpose(a.data(), m, k);
+                               grads[1] = Tensor(gemm(a_t.data(), grad_output.data().data(), k, m, n), {k, n});
+                           }
+                           return grads;
+                       });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 Tensor relu(const Tensor& x) {
+    const std::vector<float>& x_data = x.data();
     std::vector<float> out_data(x.numel());
     for (size_t i = 0; i < out_data.size(); ++i) {
-        out_data[i] = x.data()[i] > 0.0f ? x.data()[i] : 0.0f;
+        out_data[i] = x_data[i] > 0.0f ? x_data[i] : 0.0f;
     }
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = std::move(out_data);
-    out_impl->shape = x.shape();
-    out_impl->requires_grad = x.requires_grad();
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {x.impl()};
-        Tensor x_copy = x;
-        node->backward_fn = [x_copy](const Tensor& grad_output) -> std::vector<Tensor> {
-            std::vector<float> grad_x(x_copy.numel());
+    Tensor out(std::move(out_data), x.shape());
+    if (detail::should_record({&x})) {
+        detail::record(out, {&x}, {&x}, [x](const Tensor& grad_output) -> InputGrads {
+            const std::vector<float>& x_data = x.data();
+            const std::vector<float>& g = grad_output.data();
+            std::vector<float> grad_x(x.numel());
             for (size_t i = 0; i < grad_x.size(); ++i) {
-                grad_x[i] = x_copy.data()[i] > 0.0f ? grad_output.data()[i] : 0.0f;
+                grad_x[i] = x_data[i] > 0.0f ? g[i] : 0.0f;
             }
-            return {Tensor(std::move(grad_x), x_copy.shape())};
-        };
-        out_impl->grad_fn = std::move(node);
+            return {Tensor(std::move(grad_x), x.shape())};
+        });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 Tensor mse_loss(const Tensor& pred, const Tensor& target) {
@@ -362,32 +353,34 @@ Tensor mse_loss(const Tensor& pred, const Tensor& target) {
     }
     const float loss_value = sum_sq / static_cast<float>(n);
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = {loss_value};
-    out_impl->shape = {1};
-    out_impl->requires_grad = pred.requires_grad() || target.requires_grad();
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {pred.impl(), target.impl()};
-        Tensor pred_copy = pred;
-        Tensor target_copy = target;
-        node->backward_fn = [pred_copy, target_copy, n](const Tensor& grad_output) -> std::vector<Tensor> {
-            const float upstream = grad_output.data()[0];
-            std::vector<float> grad_pred(n);
-            std::vector<float> grad_target(n);
-            for (size_t i = 0; i < n; ++i) {
-                const float diff = pred_copy.data()[i] - target_copy.data()[i];
-                const float g = upstream * 2.0f * diff / static_cast<float>(n);
-                grad_pred[i] = g;
-                grad_target[i] = -g;
-            }
-            return {Tensor(std::move(grad_pred), pred_copy.shape()), Tensor(std::move(grad_target), target_copy.shape())};
-        };
-        out_impl->grad_fn = std::move(node);
+    Tensor out({loss_value}, {1});
+    if (detail::should_record({&pred, &target})) {
+        detail::record(out, {&pred, &target}, {&pred, &target},
+                       [pred, target, n](const Tensor& grad_output, const NeedsInputGrad& needs) -> InputGrads {
+                           const float upstream = grad_output.data()[0];
+                           std::vector<float> grad_pred(needs[0] ? n : 0);
+                           std::vector<float> grad_target(needs[1] ? n : 0);
+                           for (size_t i = 0; i < n; ++i) {
+                               const float diff = pred.data()[i] - target.data()[i];
+                               const float g = upstream * 2.0f * diff / static_cast<float>(n);
+                               if (needs[0]) {
+                                   grad_pred[i] = g;
+                               }
+                               if (needs[1]) {
+                                   grad_target[i] = -g;
+                               }
+                           }
+                           InputGrads grads;
+                           if (needs[0]) {
+                               grads[0] = Tensor(std::move(grad_pred), pred.shape());
+                           }
+                           if (needs[1]) {
+                               grads[1] = Tensor(std::move(grad_target), target.shape());
+                           }
+                           return grads;
+                       });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 Tensor abs_loss(const Tensor& pred, const Tensor& target) {
@@ -402,33 +395,35 @@ Tensor abs_loss(const Tensor& pred, const Tensor& target) {
     }
     const float loss_value = sum_abs / static_cast<float>(n);
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = {loss_value};
-    out_impl->shape = {1};
-    out_impl->requires_grad = pred.requires_grad() || target.requires_grad();
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {pred.impl(), target.impl()};
-        Tensor pred_copy = pred;
-        Tensor target_copy = target;
-        node->backward_fn = [pred_copy, target_copy, n](const Tensor& grad_output) -> std::vector<Tensor> {
-            const float upstream = grad_output.data()[0];
-            std::vector<float> grad_pred(n);
-            std::vector<float> grad_target(n);
-            for (size_t i = 0; i < n; ++i) {
-                const float diff = pred_copy.data()[i] - target_copy.data()[i];
-                const float sign = diff > 0.0f ? 1.0f : (diff < 0.0f ? -1.0f : 0.0f);
-                const float g = upstream * sign / static_cast<float>(n);
-                grad_pred[i] = g;
-                grad_target[i] = -g;
-            }
-            return {Tensor(std::move(grad_pred), pred_copy.shape()), Tensor(std::move(grad_target), target_copy.shape())};
-        };
-        out_impl->grad_fn = std::move(node);
+    Tensor out({loss_value}, {1});
+    if (detail::should_record({&pred, &target})) {
+        detail::record(out, {&pred, &target}, {&pred, &target},
+                       [pred, target, n](const Tensor& grad_output, const NeedsInputGrad& needs) -> InputGrads {
+                           const float upstream = grad_output.data()[0];
+                           std::vector<float> grad_pred(needs[0] ? n : 0);
+                           std::vector<float> grad_target(needs[1] ? n : 0);
+                           for (size_t i = 0; i < n; ++i) {
+                               const float diff = pred.data()[i] - target.data()[i];
+                               const float sign = diff > 0.0f ? 1.0f : (diff < 0.0f ? -1.0f : 0.0f);
+                               const float g = upstream * sign / static_cast<float>(n);
+                               if (needs[0]) {
+                                   grad_pred[i] = g;
+                               }
+                               if (needs[1]) {
+                                   grad_target[i] = -g;
+                               }
+                           }
+                           InputGrads grads;
+                           if (needs[0]) {
+                               grads[0] = Tensor(std::move(grad_pred), pred.shape());
+                           }
+                           if (needs[1]) {
+                               grads[1] = Tensor(std::move(grad_target), target.shape());
+                           }
+                           return grads;
+                       });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 Tensor binary_cross_entropy(const Tensor& pred, const Tensor& target) {
@@ -449,171 +444,143 @@ Tensor binary_cross_entropy(const Tensor& pred, const Tensor& target) {
     }
     const float loss_value = -sum / static_cast<float>(n);
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = {loss_value};
-    out_impl->shape = {1};
-    out_impl->requires_grad = pred.requires_grad() || target.requires_grad();
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {pred.impl(), target.impl()};
-        Tensor pred_copy = pred;
-        Tensor target_copy = target;
-        node->backward_fn = [pred_copy, target_copy, n, numel](const Tensor& grad_output) -> std::vector<Tensor> {
-            constexpr float kEpsilon = 1e-15f;
-            const float upstream = grad_output.data()[0];
-            std::vector<float> grad_pred(numel);
-            std::vector<float> grad_target(numel);
-            for (size_t i = 0; i < numel; ++i) {
-                const float clipped = std::clamp(pred_copy.data()[i], kEpsilon, 1.0f - kEpsilon);
-                const float t = target_copy.data()[i];
-                grad_pred[i] = -upstream * (t / clipped - (1.0f - t) / (1.0f - clipped)) / static_cast<float>(n);
-                grad_target[i] = -upstream * (std::log(clipped) - std::log(1.0f - clipped)) / static_cast<float>(n);
-            }
-            return {Tensor(std::move(grad_pred), pred_copy.shape()), Tensor(std::move(grad_target), target_copy.shape())};
-        };
-        out_impl->grad_fn = std::move(node);
+    Tensor out({loss_value}, {1});
+    if (detail::should_record({&pred, &target})) {
+        detail::record(out, {&pred, &target}, {&pred, &target},
+                       [pred, target, n, numel](const Tensor& grad_output, const NeedsInputGrad& needs) -> InputGrads {
+                           constexpr float kEpsilon = 1e-15f;
+                           const float upstream = grad_output.data()[0];
+                           std::vector<float> grad_pred(needs[0] ? numel : 0);
+                           std::vector<float> grad_target(needs[1] ? numel : 0);
+                           for (size_t i = 0; i < numel; ++i) {
+                               const float clipped = std::clamp(pred.data()[i], kEpsilon, 1.0f - kEpsilon);
+                               const float t = target.data()[i];
+                               if (needs[0]) {
+                                   grad_pred[i] = -upstream * (t / clipped - (1.0f - t) / (1.0f - clipped)) /
+                                                  static_cast<float>(n);
+                               }
+                               if (needs[1]) {
+                                   grad_target[i] =
+                                       -upstream * (std::log(clipped) - std::log(1.0f - clipped)) / static_cast<float>(n);
+                               }
+                           }
+                           InputGrads grads;
+                           if (needs[0]) {
+                               grads[0] = Tensor(std::move(grad_pred), pred.shape());
+                           }
+                           if (needs[1]) {
+                               grads[1] = Tensor(std::move(grad_target), target.shape());
+                           }
+                           return grads;
+                       });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 Tensor sigmoid(const Tensor& x) {
+    const std::vector<float>& x_data = x.data();
     std::vector<float> out_data(x.numel());
     for (size_t i = 0; i < out_data.size(); ++i) {
-        out_data[i] = 1.0f / (1.0f + std::exp(-x.data()[i]));
+        out_data[i] = 1.0f / (1.0f + std::exp(-x_data[i]));
     }
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->shape = x.shape();
-    out_impl->requires_grad = x.requires_grad();
-    out_impl->data = out_data;
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {x.impl()};
-        std::vector<float> y_copy = out_data;
-        node->backward_fn = [y_copy](const Tensor& grad_output) -> std::vector<Tensor> {
-            std::vector<float> grad_x(y_copy.size());
+    Tensor out(std::move(out_data), x.shape());
+    if (detail::should_record({&x})) {
+        detail::record(out, {&x}, {&out}, [y = out.impl()->storage](const Tensor& grad_output) -> InputGrads {
+            const std::vector<float>& y_data = y->data;
+            const std::vector<float>& g = grad_output.data();
+            std::vector<float> grad_x(y_data.size());
             for (size_t i = 0; i < grad_x.size(); ++i) {
-                grad_x[i] = grad_output.data()[i] * y_copy[i] * (1.0f - y_copy[i]);
+                grad_x[i] = g[i] * y_data[i] * (1.0f - y_data[i]);
             }
             return {Tensor(std::move(grad_x), grad_output.shape())};
-        };
-        out_impl->grad_fn = std::move(node);
+        });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 Tensor leaky_relu(const Tensor& x, float negative_slope) {
+    const std::vector<float>& x_data = x.data();
     std::vector<float> out_data(x.numel());
     for (size_t i = 0; i < out_data.size(); ++i) {
-        const float v = x.data()[i];
+        const float v = x_data[i];
         out_data[i] = v > 0.0f ? v : negative_slope * v;
     }
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = std::move(out_data);
-    out_impl->shape = x.shape();
-    out_impl->requires_grad = x.requires_grad();
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {x.impl()};
-        Tensor x_copy = x;
-        node->backward_fn = [x_copy, negative_slope](const Tensor& grad_output) -> std::vector<Tensor> {
-            std::vector<float> grad_x(x_copy.numel());
+    Tensor out(std::move(out_data), x.shape());
+    if (detail::should_record({&x})) {
+        detail::record(out, {&x}, {&x}, [x, negative_slope](const Tensor& grad_output) -> InputGrads {
+            const std::vector<float>& x_data = x.data();
+            const std::vector<float>& g = grad_output.data();
+            std::vector<float> grad_x(x.numel());
             for (size_t i = 0; i < grad_x.size(); ++i) {
-                grad_x[i] = x_copy.data()[i] > 0.0f ? grad_output.data()[i] : negative_slope * grad_output.data()[i];
+                grad_x[i] = x_data[i] > 0.0f ? g[i] : negative_slope * g[i];
             }
-            return {Tensor(std::move(grad_x), x_copy.shape())};
-        };
-        out_impl->grad_fn = std::move(node);
+            return {Tensor(std::move(grad_x), x.shape())};
+        });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 Tensor gelu(const Tensor& x) {
     constexpr float kInvSqrt2 = 0.70710678118654752440f;
     constexpr float kInvSqrt2Pi = 0.39894228040143267794f;
 
+    const std::vector<float>& x_data = x.data();
     std::vector<float> out_data(x.numel());
     for (size_t i = 0; i < out_data.size(); ++i) {
-        const float v = x.data()[i];
+        const float v = x_data[i];
         out_data[i] = v * 0.5f * (1.0f + std::erf(v * kInvSqrt2));
     }
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = std::move(out_data);
-    out_impl->shape = x.shape();
-    out_impl->requires_grad = x.requires_grad();
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {x.impl()};
-        Tensor x_copy = x;
-        node->backward_fn = [x_copy, kInvSqrt2, kInvSqrt2Pi](const Tensor& grad_output) -> std::vector<Tensor> {
-            std::vector<float> grad_x(x_copy.numel());
+    Tensor out(std::move(out_data), x.shape());
+    if (detail::should_record({&x})) {
+        detail::record(out, {&x}, {&x}, [x](const Tensor& grad_output) -> InputGrads {
+            const std::vector<float>& x_data = x.data();
+            const std::vector<float>& g = grad_output.data();
+            std::vector<float> grad_x(x.numel());
             for (size_t i = 0; i < grad_x.size(); ++i) {
-                const float v = x_copy.data()[i];
+                const float v = x_data[i];
                 const float cdf = 0.5f * (1.0f + std::erf(v * kInvSqrt2));
                 const float pdf = kInvSqrt2Pi * std::exp(-0.5f * v * v);
-                grad_x[i] = grad_output.data()[i] * (cdf + v * pdf);
+                grad_x[i] = g[i] * (cdf + v * pdf);
             }
-            return {Tensor(std::move(grad_x), x_copy.shape())};
-        };
-        out_impl->grad_fn = std::move(node);
+            return {Tensor(std::move(grad_x), x.shape())};
+        });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 Tensor tanh(const Tensor& x) {
+    const std::vector<float>& x_data = x.data();
     std::vector<float> out_data(x.numel());
     for (size_t i = 0; i < out_data.size(); ++i) {
-        out_data[i] = std::tanh(x.data()[i]);
+        out_data[i] = std::tanh(x_data[i]);
     }
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->shape = x.shape();
-    out_impl->requires_grad = x.requires_grad();
-    out_impl->data = out_data;
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {x.impl()};
-        std::vector<float> y_copy = out_data;
-        node->backward_fn = [y_copy](const Tensor& grad_output) -> std::vector<Tensor> {
-            std::vector<float> grad_x(y_copy.size());
+    Tensor out(std::move(out_data), x.shape());
+    if (detail::should_record({&x})) {
+        detail::record(out, {&x}, {&out}, [y = out.impl()->storage](const Tensor& grad_output) -> InputGrads {
+            const std::vector<float>& y_data = y->data;
+            const std::vector<float>& g = grad_output.data();
+            std::vector<float> grad_x(y_data.size());
             for (size_t i = 0; i < grad_x.size(); ++i) {
-                grad_x[i] = grad_output.data()[i] * (1.0f - y_copy[i] * y_copy[i]);
+                grad_x[i] = g[i] * (1.0f - y_data[i] * y_data[i]);
             }
             return {Tensor(std::move(grad_x), grad_output.shape())};
-        };
-        out_impl->grad_fn = std::move(node);
+        });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 Tensor identity(const Tensor& x) {
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = x.data();
-    out_impl->shape = x.shape();
-    out_impl->requires_grad = x.requires_grad();
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {x.impl()};
-        node->backward_fn = [](const Tensor& grad_output) -> std::vector<Tensor> {
-            return {Tensor(grad_output.data(), grad_output.shape())};
-        };
-        out_impl->grad_fn = std::move(node);
+    Tensor out = detail::view(x, x.shape());
+    if (detail::should_record({&x})) {
+        detail::record(out, {&x}, {}, [](const Tensor& grad_output) -> InputGrads {
+            return {grad_output};
+        });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 Tensor prelu(const Tensor& x, const Tensor& a) {
@@ -622,206 +589,186 @@ Tensor prelu(const Tensor& x, const Tensor& a) {
         throw std::runtime_error("prelu: a.numel() must be 1 or equal to x.shape().back()");
     }
 
+    const std::vector<float>& x_data = x.data();
+    const std::vector<float>& a_data = a.data();
     std::vector<float> out_data(x.numel());
     for (size_t i = 0; i < out_data.size(); ++i) {
         const size_t c = num_parameters == 1 ? 0 : i % num_parameters;
-        const float v = x.data()[i];
-        out_data[i] = v > 0.0f ? v : a.data()[c] * v;
+        const float v = x_data[i];
+        out_data[i] = v > 0.0f ? v : a_data[c] * v;
     }
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = std::move(out_data);
-    out_impl->shape = x.shape();
-    out_impl->requires_grad = x.requires_grad() || a.requires_grad();
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {x.impl(), a.impl()};
-        Tensor x_copy = x;
-        Tensor a_copy = a;
-        node->backward_fn = [x_copy, a_copy, num_parameters](const Tensor& grad_output) -> std::vector<Tensor> {
-            std::vector<float> grad_x(x_copy.numel());
-            std::vector<float> grad_a(num_parameters, 0.0f);
-            for (size_t i = 0; i < grad_x.size(); ++i) {
-                const size_t c = num_parameters == 1 ? 0 : i % num_parameters;
-                const float v = x_copy.data()[i];
-                if (v > 0.0f) {
-                    grad_x[i] = grad_output.data()[i];
-                } else {
-                    grad_x[i] = a_copy.data()[c] * grad_output.data()[i];
-                    grad_a[c] += grad_output.data()[i] * v;
-                }
-            }
-            return {Tensor(std::move(grad_x), x_copy.shape()), Tensor(std::move(grad_a), {num_parameters})};
-        };
-        out_impl->grad_fn = std::move(node);
+    Tensor out(std::move(out_data), x.shape());
+    if (detail::should_record({&x, &a})) {
+        detail::record(out, {&x, &a}, {&x, &a},
+                       [x, a, num_parameters](const Tensor& grad_output, const NeedsInputGrad& needs) -> InputGrads {
+                           const std::vector<float>& x_data = x.data();
+                           const std::vector<float>& a_data = a.data();
+                           const std::vector<float>& g = grad_output.data();
+                           std::vector<float> grad_x(needs[0] ? x.numel() : 0);
+                           std::vector<float> grad_a(num_parameters, 0.0f);
+                           for (size_t i = 0; i < x_data.size(); ++i) {
+                               const size_t c = num_parameters == 1 ? 0 : i % num_parameters;
+                               const float v = x_data[i];
+                               if (v > 0.0f) {
+                                   if (needs[0]) {
+                                       grad_x[i] = g[i];
+                                   }
+                               } else {
+                                   if (needs[0]) {
+                                       grad_x[i] = a_data[c] * g[i];
+                                   }
+                                   grad_a[c] += g[i] * v;
+                               }
+                           }
+                           InputGrads grads;
+                           if (needs[0]) {
+                               grads[0] = Tensor(std::move(grad_x), x.shape());
+                           }
+                           if (needs[1]) {
+                               grads[1] = Tensor(std::move(grad_a), {num_parameters});
+                           }
+                           return grads;
+                       });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 Tensor elu(const Tensor& x, float alpha) {
+    const std::vector<float>& x_data = x.data();
     std::vector<float> out_data(x.numel());
     for (size_t i = 0; i < out_data.size(); ++i) {
-        const float v = x.data()[i];
+        const float v = x_data[i];
         out_data[i] = v > 0.0f ? v : alpha * std::expm1(v);
     }
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = std::move(out_data);
-    out_impl->shape = x.shape();
-    out_impl->requires_grad = x.requires_grad();
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {x.impl()};
-        Tensor x_copy = x;
-        node->backward_fn = [x_copy, alpha](const Tensor& grad_output) -> std::vector<Tensor> {
-            std::vector<float> grad_x(x_copy.numel());
+    Tensor out(std::move(out_data), x.shape());
+    if (detail::should_record({&x})) {
+        detail::record(out, {&x}, {&x}, [x, alpha](const Tensor& grad_output) -> InputGrads {
+            const std::vector<float>& x_data = x.data();
+            const std::vector<float>& g = grad_output.data();
+            std::vector<float> grad_x(x.numel());
             for (size_t i = 0; i < grad_x.size(); ++i) {
-                const float v = x_copy.data()[i];
+                const float v = x_data[i];
                 const float local = v > 0.0f ? 1.0f : alpha * std::exp(v);
-                grad_x[i] = grad_output.data()[i] * local;
+                grad_x[i] = g[i] * local;
             }
-            return {Tensor(std::move(grad_x), x_copy.shape())};
-        };
-        out_impl->grad_fn = std::move(node);
+            return {Tensor(std::move(grad_x), x.shape())};
+        });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 Tensor selu(const Tensor& x) {
     constexpr float kAlpha = 1.6732632423543772f;
     constexpr float kScale = 1.0507009873554805f;
 
+    const std::vector<float>& x_data = x.data();
     std::vector<float> out_data(x.numel());
     for (size_t i = 0; i < out_data.size(); ++i) {
-        const float v = x.data()[i];
+        const float v = x_data[i];
         out_data[i] = kScale * (v > 0.0f ? v : kAlpha * std::expm1(v));
     }
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = std::move(out_data);
-    out_impl->shape = x.shape();
-    out_impl->requires_grad = x.requires_grad();
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {x.impl()};
-        Tensor x_copy = x;
-        node->backward_fn = [x_copy](const Tensor& grad_output) -> std::vector<Tensor> {
-            std::vector<float> grad_x(x_copy.numel());
+    Tensor out(std::move(out_data), x.shape());
+    if (detail::should_record({&x})) {
+        detail::record(out, {&x}, {&x}, [x](const Tensor& grad_output) -> InputGrads {
+            const std::vector<float>& x_data = x.data();
+            const std::vector<float>& g = grad_output.data();
+            std::vector<float> grad_x(x.numel());
             for (size_t i = 0; i < grad_x.size(); ++i) {
-                const float v = x_copy.data()[i];
+                const float v = x_data[i];
                 const float local = kScale * (v > 0.0f ? 1.0f : kAlpha * std::exp(v));
-                grad_x[i] = grad_output.data()[i] * local;
+                grad_x[i] = g[i] * local;
             }
-            return {Tensor(std::move(grad_x), x_copy.shape())};
-        };
-        out_impl->grad_fn = std::move(node);
+            return {Tensor(std::move(grad_x), x.shape())};
+        });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 Tensor softplus(const Tensor& x) {
+    const std::vector<float>& x_data = x.data();
     std::vector<float> out_data(x.numel());
     for (size_t i = 0; i < out_data.size(); ++i) {
-        const float v = x.data()[i];
+        const float v = x_data[i];
         out_data[i] = std::max(v, 0.0f) + std::log1p(std::exp(-std::fabs(v)));
     }
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = std::move(out_data);
-    out_impl->shape = x.shape();
-    out_impl->requires_grad = x.requires_grad();
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {x.impl()};
-        Tensor x_copy = x;
-        node->backward_fn = [x_copy](const Tensor& grad_output) -> std::vector<Tensor> {
-            std::vector<float> grad_x(x_copy.numel());
+    Tensor out(std::move(out_data), x.shape());
+    if (detail::should_record({&x})) {
+        detail::record(out, {&x}, {&x}, [x](const Tensor& grad_output) -> InputGrads {
+            const std::vector<float>& x_data = x.data();
+            const std::vector<float>& g = grad_output.data();
+            std::vector<float> grad_x(x.numel());
             for (size_t i = 0; i < grad_x.size(); ++i) {
-                const float sig = 1.0f / (1.0f + std::exp(-x_copy.data()[i]));
-                grad_x[i] = grad_output.data()[i] * sig;
+                const float sig = 1.0f / (1.0f + std::exp(-x_data[i]));
+                grad_x[i] = g[i] * sig;
             }
-            return {Tensor(std::move(grad_x), x_copy.shape())};
-        };
-        out_impl->grad_fn = std::move(node);
+            return {Tensor(std::move(grad_x), x.shape())};
+        });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 Tensor swish(const Tensor& x, float beta) {
+    const bool record_graph = detail::should_record({&x});
+    const std::vector<float>& x_data = x.data();
     std::vector<float> out_data(x.numel());
-    auto sig = std::make_shared<std::vector<float>>(x.numel());
+    auto sig = std::make_shared<std::vector<float>>(record_graph ? x.numel() : 0);
     for (size_t i = 0; i < out_data.size(); ++i) {
-        const float v = x.data()[i];
+        const float v = x_data[i];
         const float s = 1.0f / (1.0f + std::exp(-beta * v));
-        (*sig)[i] = s;
+        if (record_graph) {
+            (*sig)[i] = s;
+        }
         out_data[i] = v * s;
     }
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = std::move(out_data);
-    out_impl->shape = x.shape();
-    out_impl->requires_grad = x.requires_grad();
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {x.impl()};
-        Tensor x_copy = x;
-        node->backward_fn = [x_copy, sig, beta](const Tensor& grad_output) -> std::vector<Tensor> {
-            std::vector<float> grad_x(x_copy.numel());
+    Tensor out(std::move(out_data), x.shape());
+    if (record_graph) {
+        detail::record(out, {&x}, {&x}, [x, sig, beta](const Tensor& grad_output) -> InputGrads {
+            const std::vector<float>& x_data = x.data();
+            const std::vector<float>& g = grad_output.data();
+            std::vector<float> grad_x(x.numel());
             for (size_t i = 0; i < grad_x.size(); ++i) {
                 const float s = (*sig)[i];
-                const float local = s + beta * x_copy.data()[i] * s * (1.0f - s);
-                grad_x[i] = grad_output.data()[i] * local;
+                const float local = s + beta * x_data[i] * s * (1.0f - s);
+                grad_x[i] = g[i] * local;
             }
-            return {Tensor(std::move(grad_x), x_copy.shape())};
-        };
-        out_impl->grad_fn = std::move(node);
+            return {Tensor(std::move(grad_x), x.shape())};
+        });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 Tensor mish(const Tensor& x) {
+    const std::vector<float>& x_data = x.data();
     std::vector<float> out_data(x.numel());
     for (size_t i = 0; i < out_data.size(); ++i) {
-        const float v = x.data()[i];
+        const float v = x_data[i];
         const float sp = std::max(v, 0.0f) + std::log1p(std::exp(-std::fabs(v)));
         out_data[i] = v * std::tanh(sp);
     }
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = std::move(out_data);
-    out_impl->shape = x.shape();
-    out_impl->requires_grad = x.requires_grad();
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {x.impl()};
-        Tensor x_copy = x;
-        node->backward_fn = [x_copy](const Tensor& grad_output) -> std::vector<Tensor> {
-            std::vector<float> grad_x(x_copy.numel());
+    Tensor out(std::move(out_data), x.shape());
+    if (detail::should_record({&x})) {
+        detail::record(out, {&x}, {&x}, [x](const Tensor& grad_output) -> InputGrads {
+            const std::vector<float>& x_data = x.data();
+            const std::vector<float>& g = grad_output.data();
+            std::vector<float> grad_x(x.numel());
             for (size_t i = 0; i < grad_x.size(); ++i) {
-                const float v = x_copy.data()[i];
+                const float v = x_data[i];
                 const float sp = std::max(v, 0.0f) + std::log1p(std::exp(-std::fabs(v)));
                 const float t = std::tanh(sp);
                 const float sig = 1.0f / (1.0f + std::exp(-v));
                 const float local = t + v * (1.0f - t * t) * sig;
-                grad_x[i] = grad_output.data()[i] * local;
+                grad_x[i] = g[i] * local;
             }
-            return {Tensor(std::move(grad_x), x_copy.shape())};
-        };
-        out_impl->grad_fn = std::move(node);
+            return {Tensor(std::move(grad_x), x.shape())};
+        });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 Tensor hardtanh(const Tensor& x, float min_val, float max_val) {
@@ -829,61 +776,49 @@ Tensor hardtanh(const Tensor& x, float min_val, float max_val) {
         throw std::runtime_error("hardtanh: max_val must be greater than min_val");
     }
 
+    const std::vector<float>& x_data = x.data();
     std::vector<float> out_data(x.numel());
     for (size_t i = 0; i < out_data.size(); ++i) {
-        out_data[i] = std::clamp(x.data()[i], min_val, max_val);
+        out_data[i] = std::clamp(x_data[i], min_val, max_val);
     }
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = std::move(out_data);
-    out_impl->shape = x.shape();
-    out_impl->requires_grad = x.requires_grad();
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {x.impl()};
-        Tensor x_copy = x;
-        node->backward_fn = [x_copy, min_val, max_val](const Tensor& grad_output) -> std::vector<Tensor> {
-            std::vector<float> grad_x(x_copy.numel());
+    Tensor out(std::move(out_data), x.shape());
+    if (detail::should_record({&x})) {
+        detail::record(out, {&x}, {&x}, [x, min_val, max_val](const Tensor& grad_output) -> InputGrads {
+            const std::vector<float>& x_data = x.data();
+            const std::vector<float>& g = grad_output.data();
+            std::vector<float> grad_x(x.numel());
             for (size_t i = 0; i < grad_x.size(); ++i) {
-                const float v = x_copy.data()[i];
-                grad_x[i] = (v > min_val && v < max_val) ? grad_output.data()[i] : 0.0f;
+                const float v = x_data[i];
+                grad_x[i] = (v > min_val && v < max_val) ? g[i] : 0.0f;
             }
-            return {Tensor(std::move(grad_x), x_copy.shape())};
-        };
-        out_impl->grad_fn = std::move(node);
+            return {Tensor(std::move(grad_x), x.shape())};
+        });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 Tensor hardsigmoid(const Tensor& x) {
+    const std::vector<float>& x_data = x.data();
     std::vector<float> out_data(x.numel());
     for (size_t i = 0; i < out_data.size(); ++i) {
-        out_data[i] = std::clamp(x.data()[i] / 6.0f + 0.5f, 0.0f, 1.0f);
+        out_data[i] = std::clamp(x_data[i] / 6.0f + 0.5f, 0.0f, 1.0f);
     }
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = std::move(out_data);
-    out_impl->shape = x.shape();
-    out_impl->requires_grad = x.requires_grad();
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {x.impl()};
-        Tensor x_copy = x;
-        node->backward_fn = [x_copy](const Tensor& grad_output) -> std::vector<Tensor> {
-            std::vector<float> grad_x(x_copy.numel());
+    Tensor out(std::move(out_data), x.shape());
+    if (detail::should_record({&x})) {
+        detail::record(out, {&x}, {&x}, [x](const Tensor& grad_output) -> InputGrads {
+            const std::vector<float>& x_data = x.data();
+            const std::vector<float>& g = grad_output.data();
+            std::vector<float> grad_x(x.numel());
             for (size_t i = 0; i < grad_x.size(); ++i) {
-                const float v = x_copy.data()[i];
-                grad_x[i] = (v > -3.0f && v < 3.0f) ? grad_output.data()[i] / 6.0f : 0.0f;
+                const float v = x_data[i];
+                grad_x[i] = (v > -3.0f && v < 3.0f) ? g[i] / 6.0f : 0.0f;
             }
-            return {Tensor(std::move(grad_x), x_copy.shape())};
-        };
-        out_impl->grad_fn = std::move(node);
+            return {Tensor(std::move(grad_x), x.shape())};
+        });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 Tensor softmax(const Tensor& x) {
@@ -893,16 +828,17 @@ Tensor softmax(const Tensor& x) {
     const size_t rows = x.shape().size() == 2 ? x.shape()[0] : 1;
     const size_t cols = x.shape().size() == 2 ? x.shape()[1] : x.shape()[0];
 
+    const std::vector<float>& x_data = x.data();
     std::vector<float> out_data(x.numel());
     for (size_t r = 0; r < rows; ++r) {
         const size_t base = r * cols;
-        float row_max = x.data()[base];
+        float row_max = x_data[base];
         for (size_t c = 1; c < cols; ++c) {
-            row_max = std::max(row_max, x.data()[base + c]);
+            row_max = std::max(row_max, x_data[base + c]);
         }
         float sum_exp = 0.0f;
         for (size_t c = 0; c < cols; ++c) {
-            const float e = std::exp(x.data()[base + c] - row_max);
+            const float e = std::exp(x_data[base + c] - row_max);
             out_data[base + c] = e;
             sum_exp += e;
         }
@@ -911,33 +847,26 @@ Tensor softmax(const Tensor& x) {
         }
     }
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->shape = x.shape();
-    out_impl->requires_grad = x.requires_grad();
-    out_impl->data = out_data;
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {x.impl()};
-        std::vector<float> y_copy = out_data;
-        node->backward_fn = [y_copy, rows, cols](const Tensor& grad_output) -> std::vector<Tensor> {
-            std::vector<float> grad_x(y_copy.size());
+    Tensor out(std::move(out_data), x.shape());
+    if (detail::should_record({&x})) {
+        detail::record(out, {&x}, {&out}, [y = out.impl()->storage, rows, cols](const Tensor& grad_output) -> InputGrads {
+            const std::vector<float>& y_data = y->data;
+            const std::vector<float>& g = grad_output.data();
+            std::vector<float> grad_x(y_data.size());
             for (size_t r = 0; r < rows; ++r) {
                 const size_t base = r * cols;
                 float dot = 0.0f;
                 for (size_t c = 0; c < cols; ++c) {
-                    dot += grad_output.data()[base + c] * y_copy[base + c];
+                    dot += g[base + c] * y_data[base + c];
                 }
                 for (size_t c = 0; c < cols; ++c) {
-                    grad_x[base + c] = y_copy[base + c] * (grad_output.data()[base + c] - dot);
+                    grad_x[base + c] = y_data[base + c] * (g[base + c] - dot);
                 }
             }
             return {Tensor(std::move(grad_x), grad_output.shape())};
-        };
-        out_impl->grad_fn = std::move(node);
+        });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 Tensor cross_entropy_loss(const Tensor& pred, const Tensor& target) {
@@ -958,32 +887,34 @@ Tensor cross_entropy_loss(const Tensor& pred, const Tensor& target) {
     }
     const float loss_value = -sum / static_cast<float>(n);
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = {loss_value};
-    out_impl->shape = {1};
-    out_impl->requires_grad = pred.requires_grad() || target.requires_grad();
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {pred.impl(), target.impl()};
-        Tensor pred_copy = pred;
-        Tensor target_copy = target;
-        node->backward_fn = [pred_copy, target_copy, n, numel](const Tensor& grad_output) -> std::vector<Tensor> {
-            constexpr float kEpsilon = 1e-15f;
-            const float upstream = grad_output.data()[0];
-            std::vector<float> grad_pred(numel);
-            std::vector<float> grad_target(numel);
-            for (size_t i = 0; i < numel; ++i) {
-                const float clipped = std::clamp(pred_copy.data()[i], kEpsilon, 1.0f - kEpsilon);
-                grad_pred[i] = -upstream * target_copy.data()[i] / (clipped * static_cast<float>(n));
-                grad_target[i] = -upstream * std::log(clipped) / static_cast<float>(n);
-            }
-            return {Tensor(std::move(grad_pred), pred_copy.shape()), Tensor(std::move(grad_target), target_copy.shape())};
-        };
-        out_impl->grad_fn = std::move(node);
+    Tensor out({loss_value}, {1});
+    if (detail::should_record({&pred, &target})) {
+        detail::record(out, {&pred, &target}, {&pred, &target},
+                       [pred, target, n, numel](const Tensor& grad_output, const NeedsInputGrad& needs) -> InputGrads {
+                           constexpr float kEpsilon = 1e-15f;
+                           const float upstream = grad_output.data()[0];
+                           std::vector<float> grad_pred(needs[0] ? numel : 0);
+                           std::vector<float> grad_target(needs[1] ? numel : 0);
+                           for (size_t i = 0; i < numel; ++i) {
+                               const float clipped = std::clamp(pred.data()[i], kEpsilon, 1.0f - kEpsilon);
+                               if (needs[0]) {
+                                   grad_pred[i] = -upstream * target.data()[i] / (clipped * static_cast<float>(n));
+                               }
+                               if (needs[1]) {
+                                   grad_target[i] = -upstream * std::log(clipped) / static_cast<float>(n);
+                               }
+                           }
+                           InputGrads grads;
+                           if (needs[0]) {
+                               grads[0] = Tensor(std::move(grad_pred), pred.shape());
+                           }
+                           if (needs[1]) {
+                               grads[1] = Tensor(std::move(grad_target), target.shape());
+                           }
+                           return grads;
+                       });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 Tensor conv2d(const Tensor& x, const Tensor& weight, const Tensor& bias, size_t stride, size_t padding) {
@@ -1037,13 +968,17 @@ Tensor conv2d(const Tensor& x, const Tensor& weight, const Tensor& bias, size_t 
     auto bias_md = memory::desc(bias_dims, memory::data_type::f32, memory::format_tag::x);
     auto dst_md = memory::desc(dst_dims, memory::data_type::f32, memory::format_tag::any);
 
-    ConvKey key{N, c_in, H, W, c_out, kh, kw, stride, padding};
+    const bool record_graph = detail::should_record({&x, &weight, &bias});
+    const dnnl::prop_kind prop_kind =
+        record_graph ? dnnl::prop_kind::forward_training : dnnl::prop_kind::forward_inference;
+
+    ConvKey key{N, c_in, H, W, c_out, kh, kw, stride, padding, prop_kind};
     auto& cache = conv_cache();
     auto cache_it = cache.find(key);
     if (cache_it == cache.end()) {
         auto fwd_pd = dnnl::convolution_forward::primitive_desc(
-            engine, dnnl::prop_kind::forward_training, dnnl::algorithm::convolution_direct, src_md, weights_md,
-            bias_md, dst_md, strides_dims, padding_dims, padding_dims);
+            engine, prop_kind, dnnl::algorithm::convolution_direct, src_md, weights_md, bias_md, dst_md,
+            strides_dims, padding_dims, padding_dims);
         dnnl::convolution_forward fwd_prim(fwd_pd);
         cache_it = cache.emplace(key, ConvCacheEntry{std::move(fwd_pd), std::move(fwd_prim), std::nullopt,
                                                       std::nullopt, std::nullopt, std::nullopt}).first;
@@ -1075,37 +1010,35 @@ Tensor conv2d(const Tensor& x, const Tensor& weight, const Tensor& bias, size_t 
     memory dst_plain(plain_dst_md, engine, out_data.data());
     reorder_into(cpu_stream(), dst_mem, dst_plain);
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = std::move(out_data);
-    out_impl->shape = {N, c_out, h_out, w_out};
-    out_impl->requires_grad = x.requires_grad() || weight.requires_grad() || bias.requires_grad();
+    Tensor out(std::move(out_data), {N, c_out, h_out, w_out});
+    if (!record_graph) {
+        return out;
+    }
+    detail::record(out, {&x, &weight, &bias}, {&x, &weight},
+                   [key, x, weight, strides_dims, padding_dims,
+                    bias_dims](const Tensor& grad_output, const NeedsInputGrad& needs) -> InputGrads {
+        dnnl::engine& engine = cpu_engine();
+        dnnl::stream& stream = cpu_stream();
+        ConvCacheEntry& entry = conv_cache().at(key);
+        const dnnl::convolution_forward::primitive_desc& fwd_pd = entry.fwd_pd;
 
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {x.impl(), weight.impl(), bias.impl()};
-        Tensor x_copy = x;
-        Tensor weight_copy = weight;
-        node->backward_fn = [key, x_copy, weight_copy, strides_dims, padding_dims,
-                              bias_dims](const Tensor& grad_output) -> std::vector<Tensor> {
-            dnnl::engine& engine = cpu_engine();
-            dnnl::stream& stream = cpu_stream();
-            ConvCacheEntry& entry = conv_cache().at(key);
-            const dnnl::convolution_forward::primitive_desc& fwd_pd = entry.fwd_pd;
+        memory::dims x_dims = {static_cast<memory::dim>(x.shape()[0]), static_cast<memory::dim>(x.shape()[1]),
+                                static_cast<memory::dim>(x.shape()[2]), static_cast<memory::dim>(x.shape()[3])};
+        memory::dims w_dims = {static_cast<memory::dim>(weight.shape()[0]), static_cast<memory::dim>(weight.shape()[1]),
+                                static_cast<memory::dim>(weight.shape()[2]), static_cast<memory::dim>(weight.shape()[3])};
+        memory::dims go_dims = {static_cast<memory::dim>(grad_output.shape()[0]), static_cast<memory::dim>(grad_output.shape()[1]),
+                                 static_cast<memory::dim>(grad_output.shape()[2]), static_cast<memory::dim>(grad_output.shape()[3])};
+        auto plain_src_md = memory::desc(x_dims, memory::data_type::f32, memory::format_tag::nchw);
+        auto plain_weights_md = memory::desc(w_dims, memory::data_type::f32, memory::format_tag::oihw);
+        auto plain_dst_md = memory::desc(go_dims, memory::data_type::f32, memory::format_tag::nchw);
 
-            memory::dims x_dims = {static_cast<memory::dim>(x_copy.shape()[0]), static_cast<memory::dim>(x_copy.shape()[1]),
-                                    static_cast<memory::dim>(x_copy.shape()[2]), static_cast<memory::dim>(x_copy.shape()[3])};
-            memory::dims w_dims = {static_cast<memory::dim>(weight_copy.shape()[0]), static_cast<memory::dim>(weight_copy.shape()[1]),
-                                    static_cast<memory::dim>(weight_copy.shape()[2]), static_cast<memory::dim>(weight_copy.shape()[3])};
-            memory::dims go_dims = {static_cast<memory::dim>(grad_output.shape()[0]), static_cast<memory::dim>(grad_output.shape()[1]),
-                                     static_cast<memory::dim>(grad_output.shape()[2]), static_cast<memory::dim>(grad_output.shape()[3])};
-            auto plain_src_md = memory::desc(x_dims, memory::data_type::f32, memory::format_tag::nchw);
-            auto plain_weights_md = memory::desc(w_dims, memory::data_type::f32, memory::format_tag::oihw);
-            auto plain_dst_md = memory::desc(go_dims, memory::data_type::f32, memory::format_tag::nchw);
+        memory diff_dst_plain(plain_dst_md, engine, const_cast<float*>(grad_output.data().data()));
 
-            memory diff_dst_plain(plain_dst_md, engine, const_cast<float*>(grad_output.data().data()));
-            memory weights_plain(plain_weights_md, engine, const_cast<float*>(weight_copy.data().data()));
-            memory src_plain(plain_src_md, engine, const_cast<float*>(x_copy.data().data()));
-
+        InputGrads grads;
+        // The data gradient is a full extra convolution pass, and is wasted on a first layer
+        // whose input is a data batch -- skip it unless x actually needs a gradient.
+        if (needs[0]) {
+            memory weights_plain(plain_weights_md, engine, const_cast<float*>(weight.data().data()));
             if (!entry.bwd_data_pd.has_value()) {
                 auto diff_src_any = memory::desc(x_dims, memory::data_type::f32, memory::format_tag::any);
                 auto weights_any = memory::desc(w_dims, memory::data_type::f32, memory::format_tag::any);
@@ -1125,10 +1058,14 @@ Tensor conv2d(const Tensor& x, const Tensor& weight, const Tensor& bias, size_t 
                 {DNNL_ARG_DIFF_SRC, diff_src_opt},
             });
             stream.wait();
-            std::vector<float> grad_x_data(x_copy.numel());
+            std::vector<float> grad_x_data(x.numel());
             memory diff_src_plain(plain_src_md, engine, grad_x_data.data());
             reorder_into(stream, diff_src_opt, diff_src_plain);
+            grads[0] = Tensor(std::move(grad_x_data), x.shape());
+        }
 
+        if (needs[1] || needs[2]) {
+            memory src_plain(plain_src_md, engine, const_cast<float*>(x.data().data()));
             if (!entry.bwd_weights_pd.has_value()) {
                 auto src_any = memory::desc(x_dims, memory::data_type::f32, memory::format_tag::any);
                 auto diff_weights_any = memory::desc(w_dims, memory::data_type::f32, memory::format_tag::any);
@@ -1151,20 +1088,19 @@ Tensor conv2d(const Tensor& x, const Tensor& weight, const Tensor& bias, size_t 
                 {DNNL_ARG_DIFF_BIAS, diff_bias_mem},
             });
             stream.wait();
-            std::vector<float> grad_w_data(weight_copy.numel());
-            memory diff_weights_plain(plain_weights_md, engine, grad_w_data.data());
-            reorder_into(stream, diff_weights_opt, diff_weights_plain);
-
-            return {
-                Tensor(std::move(grad_x_data), x_copy.shape()),
-                Tensor(std::move(grad_w_data), weight_copy.shape()),
-                Tensor(std::move(grad_b_data), {static_cast<size_t>(bias_dims[0])}),
-            };
-        };
-        out_impl->grad_fn = std::move(node);
-    }
-
-    return Tensor::from_impl(std::move(out_impl));
+            if (needs[1]) {
+                std::vector<float> grad_w_data(weight.numel());
+                memory diff_weights_plain(plain_weights_md, engine, grad_w_data.data());
+                reorder_into(stream, diff_weights_opt, diff_weights_plain);
+                grads[1] = Tensor(std::move(grad_w_data), weight.shape());
+            }
+            if (needs[2]) {
+                grads[2] = Tensor(std::move(grad_b_data), {static_cast<size_t>(bias_dims[0])});
+            }
+        }
+        return grads;
+    });
+    return out;
 }
 
 Tensor max_pool2d(const Tensor& x, size_t kernel_size, size_t stride) {
@@ -1182,22 +1118,13 @@ Tensor flatten(const Tensor& x) {
     const size_t n = x.shape()[0];
     const size_t rest = n == 0 ? 0 : x.numel() / n;
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = x.data();
-    out_impl->shape = {n, rest};
-    out_impl->requires_grad = x.requires_grad();
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {x.impl()};
-        std::vector<size_t> x_shape = x.shape();
-        node->backward_fn = [x_shape](const Tensor& grad_output) -> std::vector<Tensor> {
-            return {Tensor(grad_output.data(), x_shape)};
-        };
-        out_impl->grad_fn = std::move(node);
+    Tensor out = detail::view(x, {n, rest});
+    if (detail::should_record({&x})) {
+        detail::record(out, {&x}, {}, [x_shape = x.shape()](const Tensor& grad_output) -> InputGrads {
+            return {detail::view(grad_output, x_shape)};
+        });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 Tensor batch_norm2d(const Tensor& x, const Tensor& gamma, const Tensor& beta, std::vector<float>& running_mean,
@@ -1217,6 +1144,7 @@ Tensor batch_norm2d(const Tensor& x, const Tensor& gamma, const Tensor& beta, st
     }
     const size_t plane = H * W;
     const size_t m = N * plane;
+    const std::vector<float>& x_data = x.data();
 
     std::vector<float> mean(C);
     std::vector<float> var(C);
@@ -1226,7 +1154,7 @@ Tensor batch_norm2d(const Tensor& x, const Tensor& gamma, const Tensor& beta, st
             for (size_t n = 0; n < N; ++n) {
                 const size_t base = (n * C + c) * plane;
                 for (size_t p = 0; p < plane; ++p) {
-                    sum += x.data()[base + p];
+                    sum += x_data[base + p];
                 }
             }
             mean[c] = sum / static_cast<float>(m);
@@ -1236,7 +1164,7 @@ Tensor batch_norm2d(const Tensor& x, const Tensor& gamma, const Tensor& beta, st
             for (size_t n = 0; n < N; ++n) {
                 const size_t base = (n * C + c) * plane;
                 for (size_t p = 0; p < plane; ++p) {
-                    const float d = x.data()[base + p] - mean[c];
+                    const float d = x_data[base + p] - mean[c];
                     sum_sq += d * d;
                 }
             }
@@ -1256,43 +1184,55 @@ Tensor batch_norm2d(const Tensor& x, const Tensor& gamma, const Tensor& beta, st
         std_inv[c] = 1.0f / std::sqrt(var[c] + eps);
     }
 
-    auto xhat = std::make_shared<std::vector<float>>(x.numel());
+    // xhat is only read by backward, so it is not materialized when no graph is recorded.
+    const bool record_graph = detail::should_record({&x, &gamma, &beta});
+    auto xhat = std::make_shared<std::vector<float>>(record_graph ? x.numel() : 0);
+    const std::vector<float>& gamma_data = gamma.data();
+    const std::vector<float>& beta_data = beta.data();
     std::vector<float> out_data(x.numel());
     for (size_t n = 0; n < N; ++n) {
         for (size_t c = 0; c < C; ++c) {
             const size_t base = (n * C + c) * plane;
             for (size_t p = 0; p < plane; ++p) {
-                const float xh = (x.data()[base + p] - mean[c]) * std_inv[c];
-                (*xhat)[base + p] = xh;
-                out_data[base + p] = gamma.data()[c] * xh + beta.data()[c];
+                const float xh = (x_data[base + p] - mean[c]) * std_inv[c];
+                if (record_graph) {
+                    (*xhat)[base + p] = xh;
+                }
+                out_data[base + p] = gamma_data[c] * xh + beta_data[c];
             }
         }
     }
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = std::move(out_data);
-    out_impl->shape = x.shape();
-    out_impl->requires_grad = x.requires_grad() || gamma.requires_grad() || beta.requires_grad();
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {x.impl(), gamma.impl(), beta.impl()};
-        Tensor gamma_copy = gamma;
-        std::vector<size_t> x_shape = x.shape();
-        node->backward_fn = [xhat, std_inv, gamma_copy, x_shape, N, C, plane, m,
-                              training](const Tensor& grad_output) -> std::vector<Tensor> {
+    Tensor out(std::move(out_data), x.shape());
+    if (!record_graph) {
+        return out;
+    }
+    detail::record(out, {&x, &gamma, &beta}, {&gamma},
+                   [xhat, std_inv, gamma, x_shape = x.shape(), N, C, plane, m,
+                    training](const Tensor& grad_output, const NeedsInputGrad& needs) -> InputGrads {
+        const std::vector<float>& g = grad_output.data();
+        InputGrads grads;
+        if (needs[1] || needs[2]) {
             std::vector<float> grad_gamma(C, 0.0f);
             std::vector<float> grad_beta(C, 0.0f);
             for (size_t n = 0; n < N; ++n) {
                 for (size_t c = 0; c < C; ++c) {
                     const size_t base = (n * C + c) * plane;
                     for (size_t p = 0; p < plane; ++p) {
-                        grad_gamma[c] += grad_output.data()[base + p] * (*xhat)[base + p];
-                        grad_beta[c] += grad_output.data()[base + p];
+                        grad_gamma[c] += g[base + p] * (*xhat)[base + p];
+                        grad_beta[c] += g[base + p];
                     }
                 }
             }
+            if (needs[1]) {
+                grads[1] = Tensor(std::move(grad_gamma), {C});
+            }
+            if (needs[2]) {
+                grads[2] = Tensor(std::move(grad_beta), {C});
+            }
+        }
 
+        if (needs[0]) {
             std::vector<float> grad_x(N * C * plane);
             if (training) {
                 for (size_t c = 0; c < C; ++c) {
@@ -1301,41 +1241,35 @@ Tensor batch_norm2d(const Tensor& x, const Tensor& gamma, const Tensor& beta, st
                     for (size_t n = 0; n < N; ++n) {
                         const size_t base = (n * C + c) * plane;
                         for (size_t p = 0; p < plane; ++p) {
-                            sum_dout += grad_output.data()[base + p];
-                            sum_dout_xhat += grad_output.data()[base + p] * (*xhat)[base + p];
+                            sum_dout += g[base + p];
+                            sum_dout_xhat += g[base + p] * (*xhat)[base + p];
                         }
                     }
-                    const float coeff = gamma_copy.data()[c] * std_inv[c] / static_cast<float>(m);
+                    const float coeff = gamma.data()[c] * std_inv[c] / static_cast<float>(m);
                     for (size_t n = 0; n < N; ++n) {
                         const size_t base = (n * C + c) * plane;
                         for (size_t p = 0; p < plane; ++p) {
-                            grad_x[base + p] = coeff * (static_cast<float>(m) * grad_output.data()[base + p] -
-                                                         sum_dout - (*xhat)[base + p] * sum_dout_xhat);
+                            grad_x[base + p] = coeff * (static_cast<float>(m) * g[base + p] - sum_dout -
+                                                         (*xhat)[base + p] * sum_dout_xhat);
                         }
                     }
                 }
             } else {
                 for (size_t c = 0; c < C; ++c) {
-                    const float coeff = gamma_copy.data()[c] * std_inv[c];
+                    const float coeff = gamma.data()[c] * std_inv[c];
                     for (size_t n = 0; n < N; ++n) {
                         const size_t base = (n * C + c) * plane;
                         for (size_t p = 0; p < plane; ++p) {
-                            grad_x[base + p] = coeff * grad_output.data()[base + p];
+                            grad_x[base + p] = coeff * g[base + p];
                         }
                     }
                 }
             }
-
-            return {
-                Tensor(std::move(grad_x), x_shape),
-                Tensor(std::move(grad_gamma), {C}),
-                Tensor(std::move(grad_beta), {C}),
-            };
-        };
-        out_impl->grad_fn = std::move(node);
-    }
-
-    return Tensor::from_impl(std::move(out_impl));
+            grads[0] = Tensor(std::move(grad_x), x_shape);
+        }
+        return grads;
+    });
+    return out;
 }
 
 Tensor batch_norm1d(const Tensor& x, const Tensor& gamma, const Tensor& beta, std::vector<float>& running_mean,
@@ -1351,6 +1285,7 @@ Tensor batch_norm1d(const Tensor& x, const Tensor& gamma, const Tensor& beta, st
     if (running_mean.size() != C || running_var.size() != C) {
         throw std::runtime_error("batch_norm1d: running_mean and running_var must have C entries");
     }
+    const std::vector<float>& x_data = x.data();
 
     std::vector<float> mean(C);
     std::vector<float> var(C);
@@ -1358,14 +1293,14 @@ Tensor batch_norm1d(const Tensor& x, const Tensor& gamma, const Tensor& beta, st
         for (size_t c = 0; c < C; ++c) {
             float sum = 0.0f;
             for (size_t n = 0; n < N; ++n) {
-                sum += x.data()[n * C + c];
+                sum += x_data[n * C + c];
             }
             mean[c] = sum / static_cast<float>(N);
         }
         for (size_t c = 0; c < C; ++c) {
             float sum_sq = 0.0f;
             for (size_t n = 0; n < N; ++n) {
-                const float d = x.data()[n * C + c] - mean[c];
+                const float d = x_data[n * C + c] - mean[c];
                 sum_sq += d * d;
             }
             var[c] = sum_sq / static_cast<float>(N);
@@ -1384,39 +1319,50 @@ Tensor batch_norm1d(const Tensor& x, const Tensor& gamma, const Tensor& beta, st
         std_inv[c] = 1.0f / std::sqrt(var[c] + eps);
     }
 
-    auto xhat = std::make_shared<std::vector<float>>(x.numel());
+    const bool record_graph = detail::should_record({&x, &gamma, &beta});
+    auto xhat = std::make_shared<std::vector<float>>(record_graph ? x.numel() : 0);
+    const std::vector<float>& gamma_data = gamma.data();
+    const std::vector<float>& beta_data = beta.data();
     std::vector<float> out_data(x.numel());
     for (size_t n = 0; n < N; ++n) {
         for (size_t c = 0; c < C; ++c) {
             const size_t idx = n * C + c;
-            const float xh = (x.data()[idx] - mean[c]) * std_inv[c];
-            (*xhat)[idx] = xh;
-            out_data[idx] = gamma.data()[c] * xh + beta.data()[c];
+            const float xh = (x_data[idx] - mean[c]) * std_inv[c];
+            if (record_graph) {
+                (*xhat)[idx] = xh;
+            }
+            out_data[idx] = gamma_data[c] * xh + beta_data[c];
         }
     }
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = std::move(out_data);
-    out_impl->shape = x.shape();
-    out_impl->requires_grad = x.requires_grad() || gamma.requires_grad() || beta.requires_grad();
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {x.impl(), gamma.impl(), beta.impl()};
-        Tensor gamma_copy = gamma;
-        std::vector<size_t> x_shape = x.shape();
-        node->backward_fn = [xhat, std_inv, gamma_copy, x_shape, N, C,
-                              training](const Tensor& grad_output) -> std::vector<Tensor> {
+    Tensor out(std::move(out_data), x.shape());
+    if (!record_graph) {
+        return out;
+    }
+    detail::record(out, {&x, &gamma, &beta}, {&gamma},
+                   [xhat, std_inv, gamma, x_shape = x.shape(), N, C,
+                    training](const Tensor& grad_output, const NeedsInputGrad& needs) -> InputGrads {
+        const std::vector<float>& g = grad_output.data();
+        InputGrads grads;
+        if (needs[1] || needs[2]) {
             std::vector<float> grad_gamma(C, 0.0f);
             std::vector<float> grad_beta(C, 0.0f);
             for (size_t n = 0; n < N; ++n) {
                 for (size_t c = 0; c < C; ++c) {
                     const size_t idx = n * C + c;
-                    grad_gamma[c] += grad_output.data()[idx] * (*xhat)[idx];
-                    grad_beta[c] += grad_output.data()[idx];
+                    grad_gamma[c] += g[idx] * (*xhat)[idx];
+                    grad_beta[c] += g[idx];
                 }
             }
+            if (needs[1]) {
+                grads[1] = Tensor(std::move(grad_gamma), {C});
+            }
+            if (needs[2]) {
+                grads[2] = Tensor(std::move(grad_beta), {C});
+            }
+        }
 
+        if (needs[0]) {
             std::vector<float> grad_x(N * C);
             if (training) {
                 for (size_t c = 0; c < C; ++c) {
@@ -1424,36 +1370,29 @@ Tensor batch_norm1d(const Tensor& x, const Tensor& gamma, const Tensor& beta, st
                     float sum_dout_xhat = 0.0f;
                     for (size_t n = 0; n < N; ++n) {
                         const size_t idx = n * C + c;
-                        sum_dout += grad_output.data()[idx];
-                        sum_dout_xhat += grad_output.data()[idx] * (*xhat)[idx];
+                        sum_dout += g[idx];
+                        sum_dout_xhat += g[idx] * (*xhat)[idx];
                     }
-                    const float coeff = gamma_copy.data()[c] * std_inv[c] / static_cast<float>(N);
+                    const float coeff = gamma.data()[c] * std_inv[c] / static_cast<float>(N);
                     for (size_t n = 0; n < N; ++n) {
                         const size_t idx = n * C + c;
-                        grad_x[idx] =
-                            coeff * (static_cast<float>(N) * grad_output.data()[idx] - sum_dout - (*xhat)[idx] * sum_dout_xhat);
+                        grad_x[idx] = coeff * (static_cast<float>(N) * g[idx] - sum_dout - (*xhat)[idx] * sum_dout_xhat);
                     }
                 }
             } else {
                 for (size_t c = 0; c < C; ++c) {
-                    const float coeff = gamma_copy.data()[c] * std_inv[c];
+                    const float coeff = gamma.data()[c] * std_inv[c];
                     for (size_t n = 0; n < N; ++n) {
                         const size_t idx = n * C + c;
-                        grad_x[idx] = coeff * grad_output.data()[idx];
+                        grad_x[idx] = coeff * g[idx];
                     }
                 }
             }
-
-            return {
-                Tensor(std::move(grad_x), x_shape),
-                Tensor(std::move(grad_gamma), {C}),
-                Tensor(std::move(grad_beta), {C}),
-            };
-        };
-        out_impl->grad_fn = std::move(node);
-    }
-
-    return Tensor::from_impl(std::move(out_impl));
+            grads[0] = Tensor(std::move(grad_x), x_shape);
+        }
+        return grads;
+    });
+    return out;
 }
 
 Tensor global_avg_pool2d(const Tensor& x) {
@@ -1465,6 +1404,7 @@ Tensor global_avg_pool2d(const Tensor& x) {
     const size_t H = x.shape()[2];
     const size_t W = x.shape()[3];
     const size_t plane = H * W;
+    const std::vector<float>& x_data = x.data();
 
     std::vector<float> out_data(N * C);
     for (size_t n = 0; n < N; ++n) {
@@ -1472,38 +1412,30 @@ Tensor global_avg_pool2d(const Tensor& x) {
             const size_t base = (n * C + c) * plane;
             float sum = 0.0f;
             for (size_t p = 0; p < plane; ++p) {
-                sum += x.data()[base + p];
+                sum += x_data[base + p];
             }
             out_data[n * C + c] = sum / static_cast<float>(plane);
         }
     }
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = std::move(out_data);
-    out_impl->shape = {N, C, 1, 1};
-    out_impl->requires_grad = x.requires_grad();
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {x.impl()};
-        std::vector<size_t> x_shape = x.shape();
-        node->backward_fn = [x_shape, N, C, plane](const Tensor& grad_output) -> std::vector<Tensor> {
+    Tensor out(std::move(out_data), {N, C, 1, 1});
+    if (detail::should_record({&x})) {
+        detail::record(out, {&x}, {}, [x_shape = x.shape(), N, C, plane](const Tensor& grad_output) -> InputGrads {
+            const std::vector<float>& g = grad_output.data();
             std::vector<float> grad_x(N * C * plane);
             for (size_t n = 0; n < N; ++n) {
                 for (size_t c = 0; c < C; ++c) {
-                    const float g = grad_output.data()[n * C + c] / static_cast<float>(plane);
+                    const float value = g[n * C + c] / static_cast<float>(plane);
                     const size_t base = (n * C + c) * plane;
                     for (size_t p = 0; p < plane; ++p) {
-                        grad_x[base + p] = g;
+                        grad_x[base + p] = value;
                     }
                 }
             }
             return {Tensor(std::move(grad_x), x_shape)};
-        };
-        out_impl->grad_fn = std::move(node);
+        });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 Tensor global_max_pool2d(const Tensor& x) {
@@ -1515,6 +1447,7 @@ Tensor global_max_pool2d(const Tensor& x) {
     const size_t H = x.shape()[2];
     const size_t W = x.shape()[3];
     const size_t plane = H * W;
+    const std::vector<float>& x_data = x.data();
 
     std::vector<float> out_data(N * C);
     auto argmax = std::make_shared<std::vector<size_t>>(N * C);
@@ -1522,10 +1455,10 @@ Tensor global_max_pool2d(const Tensor& x) {
         for (size_t c = 0; c < C; ++c) {
             const size_t base = (n * C + c) * plane;
             size_t best = 0;
-            float best_value = x.data()[base];
+            float best_value = x_data[base];
             for (size_t p = 1; p < plane; ++p) {
-                if (x.data()[base + p] > best_value) {
-                    best_value = x.data()[base + p];
+                if (x_data[base + p] > best_value) {
+                    best_value = x_data[base + p];
                     best = p;
                 }
             }
@@ -1534,29 +1467,21 @@ Tensor global_max_pool2d(const Tensor& x) {
         }
     }
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = std::move(out_data);
-    out_impl->shape = {N, C, 1, 1};
-    out_impl->requires_grad = x.requires_grad();
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {x.impl()};
-        std::vector<size_t> x_shape = x.shape();
-        node->backward_fn = [x_shape, argmax, N, C, plane](const Tensor& grad_output) -> std::vector<Tensor> {
+    Tensor out(std::move(out_data), {N, C, 1, 1});
+    if (detail::should_record({&x})) {
+        detail::record(out, {&x}, {}, [x_shape = x.shape(), argmax, N, C, plane](const Tensor& grad_output) -> InputGrads {
+            const std::vector<float>& g = grad_output.data();
             std::vector<float> grad_x(N * C * plane, 0.0f);
             for (size_t n = 0; n < N; ++n) {
                 for (size_t c = 0; c < C; ++c) {
                     const size_t base = (n * C + c) * plane;
-                    grad_x[base + (*argmax)[n * C + c]] = grad_output.data()[n * C + c];
+                    grad_x[base + (*argmax)[n * C + c]] = g[n * C + c];
                 }
             }
             return {Tensor(std::move(grad_x), x_shape)};
-        };
-        out_impl->grad_fn = std::move(node);
+        });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 Tensor dropout(const Tensor& x, float p, bool training, std::mt19937& rng) {
@@ -1564,50 +1489,38 @@ Tensor dropout(const Tensor& x, float p, bool training, std::mt19937& rng) {
         throw std::runtime_error("dropout: p must be in [0, 1)");
     }
     if (!training || p == 0.0f) {
-        auto out_impl = std::make_shared<TensorImpl>();
-        out_impl->data = x.data();
-        out_impl->shape = x.shape();
-        out_impl->requires_grad = x.requires_grad();
-        if (out_impl->requires_grad) {
-            auto node = std::make_shared<Node>();
-            node->inputs = {x.impl()};
-            node->backward_fn = [](const Tensor& grad_output) -> std::vector<Tensor> {
-                return {Tensor(grad_output.data(), grad_output.shape())};
-            };
-            out_impl->grad_fn = std::move(node);
+        Tensor out = detail::view(x, x.shape());
+        if (detail::should_record({&x})) {
+            detail::record(out, {&x}, {}, [](const Tensor& grad_output) -> InputGrads {
+                return {grad_output};
+            });
         }
-        return Tensor::from_impl(std::move(out_impl));
+        return out;
     }
 
     const float keep_prob = 1.0f - p;
     std::uniform_real_distribution<float> uniform(0.0f, 1.0f);
+    const std::vector<float>& x_data = x.data();
     auto mask = std::make_shared<std::vector<float>>(x.numel());
     std::vector<float> out_data(x.numel());
     for (size_t i = 0; i < out_data.size(); ++i) {
         const float keep = uniform(rng) < keep_prob ? 1.0f / keep_prob : 0.0f;
         (*mask)[i] = keep;
-        out_data[i] = x.data()[i] * keep;
+        out_data[i] = x_data[i] * keep;
     }
 
-    auto out_impl = std::make_shared<TensorImpl>();
-    out_impl->data = std::move(out_data);
-    out_impl->shape = x.shape();
-    out_impl->requires_grad = x.requires_grad();
-
-    if (out_impl->requires_grad) {
-        auto node = std::make_shared<Node>();
-        node->inputs = {x.impl()};
-        node->backward_fn = [mask](const Tensor& grad_output) -> std::vector<Tensor> {
+    Tensor out(std::move(out_data), x.shape());
+    if (detail::should_record({&x})) {
+        detail::record(out, {&x}, {}, [mask](const Tensor& grad_output) -> InputGrads {
+            const std::vector<float>& g = grad_output.data();
             std::vector<float> grad_x(mask->size());
             for (size_t i = 0; i < grad_x.size(); ++i) {
-                grad_x[i] = grad_output.data()[i] * (*mask)[i];
+                grad_x[i] = g[i] * (*mask)[i];
             }
             return {Tensor(std::move(grad_x), grad_output.shape())};
-        };
-        out_impl->grad_fn = std::move(node);
+        });
     }
-
-    return Tensor::from_impl(std::move(out_impl));
+    return out;
 }
 
 }  // namespace advanceml

@@ -33,7 +33,7 @@ void check_input_gradient(Tensor& input, const std::function<float()>& loss_fn, 
     Tensor grad = input.grad();
     for (size_t i = 0; i < input.numel(); ++i) {
         const float analytic = grad.data()[i];
-        const float numeric = numerical_grad(input.data()[i], loss_fn, eps);
+        const float numeric = numerical_grad(input.mutable_data()[i], loss_fn, eps);
         REQUIRE(analytic == Catch::Approx(numeric).margin(tolerance));
     }
 }
