@@ -62,7 +62,7 @@ TEST_CASE("backward() matches numerical gradient on a small MLP graph", "[autogr
         Tensor grad = param->grad();
         for (size_t i = 0; i < param->numel(); ++i) {
             const float analytic = grad.data()[i];
-            const float numeric = numerical_grad(param->data()[i], loss_fn, eps);
+            const float numeric = numerical_grad(param->mutable_data()[i], loss_fn, eps);
             REQUIRE(analytic == Catch::Approx(numeric).margin(tolerance));
         }
     }

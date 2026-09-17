@@ -17,10 +17,11 @@ void Momentum::step() {
             continue;
         }
         Tensor grad = param.grad();
+        std::vector<float>& values = param.mutable_data();
         std::vector<float>& velocity = velocities_[i];
-        for (size_t j = 0; j < param.data().size(); ++j) {
+        for (size_t j = 0; j < values.size(); ++j) {
             velocity[j] = momentum_ * velocity[j] + grad.data()[j];
-            param.data()[j] -= learning_rate_ * velocity[j];
+            values[j] -= learning_rate_ * velocity[j];
         }
     }
 }

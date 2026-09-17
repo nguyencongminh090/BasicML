@@ -39,7 +39,7 @@ void check_loss_gradient(const std::function<Tensor(const Tensor&, const Tensor&
 
     for (size_t i = 0; i < pred.numel(); ++i) {
         const float analytic = grad.data()[i];
-        const float numeric = numerical_grad(pred.data()[i], scalar_loss, eps);
+        const float numeric = numerical_grad(pred.mutable_data()[i], scalar_loss, eps);
         REQUIRE(analytic == Catch::Approx(numeric).margin(tolerance));
     }
 }

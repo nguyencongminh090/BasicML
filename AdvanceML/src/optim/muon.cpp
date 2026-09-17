@@ -101,6 +101,7 @@ void Muon::step() {
             continue;
         }
         Tensor grad = param.grad();
+        std::vector<float>& values = param.mutable_data();
         std::vector<float>& velocity = velocities_[i];
         for (size_t j = 0; j < velocity.size(); ++j) {
             velocity[j] = momentum_ * velocity[j] + grad.data()[j];
@@ -113,15 +114,15 @@ void Muon::step() {
 
         if (param.shape().size() >= 2) {
             const size_t rows = param.shape()[0];
-            const size_t cols = param.data().size() / rows;
+            const size_t cols = values.size() / rows;
             std::vector<float> ortho = newton_schulz5(update, rows, cols, newton_schulz_steps_, eps_);
             const float scale = std::sqrt(std::max(1.0f, static_cast<float>(rows) / static_cast<float>(cols)));
-            for (size_t j = 0; j < param.data().size(); ++j) {
-                param.data()[j] -= learning_rate_ * scale * ortho[j];
+            for (size_t j = 0; j < values.size(); ++j) {
+                values[j] -= learning_rate_ * scale * ortho[j];
             }
         } else {
-            for (size_t j = 0; j < param.data().size(); ++j) {
-                param.data()[j] -= learning_rate_ * update[j];
+            for (size_t j = 0; j < values.size(); ++j) {
+                values[j] -= learning_rate_ * update[j];
             }
         }
     }

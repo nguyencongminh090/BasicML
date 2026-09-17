@@ -17,11 +17,12 @@ void Nesterov::step() {
             continue;
         }
         Tensor grad = param.grad();
+        std::vector<float>& values = param.mutable_data();
         std::vector<float>& velocity = velocities_[i];
-        for (size_t j = 0; j < param.data().size(); ++j) {
+        for (size_t j = 0; j < values.size(); ++j) {
             const float previous = velocity[j];
             velocity[j] = momentum_ * previous - learning_rate_ * grad.data()[j];
-            param.data()[j] += -momentum_ * previous + (1.0f + momentum_) * velocity[j];
+            values[j] += -momentum_ * previous + (1.0f + momentum_) * velocity[j];
         }
     }
 }
