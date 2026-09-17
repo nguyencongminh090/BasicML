@@ -14,6 +14,7 @@ option(ADVANCEML_BUILD_TESTS "Build the Catch2 test suite" ON)
 
 add_library(advanceml
     src/version.cpp
+    src/detail/dnnl_layout.cpp
     src/tensor.cpp
     src/ops.cpp
     src/nn/module.cpp
@@ -60,7 +61,12 @@ add_library(advanceml
 target_include_directories(advanceml PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
+target_include_directories(advanceml PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(advanceml PUBLIC cxx_std_23)
+
+# Lets GCC vectorize loops that call sqrt/exp/log (AdamW, softmax) by dropping errno updates;
+# unlike -ffast-math it keeps IEEE semantics (NaN/Inf handling, no reassociation).
+target_compile_options(advanceml PRIVATE -fno-math-errno)
 
 if(ADVANCEML_NATIVE_ARCH)
     target_compile_options(advanceml PUBLIC -march=native)

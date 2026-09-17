@@ -43,6 +43,19 @@ public:
 };
 
 /**
+ * Fused softmax + cross-entropy loss: thin `Loss` wrapper around the
+ * `softmax_cross_entropy` op. Unlike `CrossEntropyLoss`, `pred` is the raw
+ * logits (no `Softmax` layer before it), and `target` a one-hot (or
+ * otherwise normalized) distribution of the same shape. Numerically stable
+ * and one pass instead of two. See `softmax_cross_entropy` in `ops.hpp` for
+ * the forward/backward formulas.
+ */
+class SoftmaxCrossEntropyLoss : public Loss {
+public:
+    Tensor operator()(const Tensor& pred, const Tensor& target) override;
+};
+
+/**
  * Mean absolute error loss: thin `Loss` wrapper around the `abs_loss` op
  * (`loss = mean(|pred - target|)`). See `abs_loss` in `ops.hpp` for the
  * forward/backward formulas.

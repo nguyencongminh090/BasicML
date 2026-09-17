@@ -101,7 +101,7 @@ void Muon::step() {
             continue;
         }
         Tensor grad = param.grad();
-        std::vector<float>& values = param.mutable_data();
+        FloatBuffer& values = param.mutable_data();
         std::vector<float>& velocity = velocities_[i];
         for (size_t j = 0; j < velocity.size(); ++j) {
             velocity[j] = momentum_ * velocity[j] + grad.data()[j];

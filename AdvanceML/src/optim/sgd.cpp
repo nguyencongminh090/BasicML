@@ -11,7 +11,7 @@ void SGD::step() {
             continue;
         }
         Tensor grad = param.grad();
-        std::vector<float>& values = param.mutable_data();
+        FloatBuffer& values = param.mutable_data();
         for (size_t i = 0; i < values.size(); ++i) {
             values[i] -= learning_rate_ * grad.data()[i];
         }

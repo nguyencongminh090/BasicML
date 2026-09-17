@@ -13,15 +13,35 @@ namespace advanceml {
  * Forward is computed via oneDNN's `dnnl::matmul` primitive (exercises
  * this CPU's AVX-512 VNNI). Backward, for upstream gradient `dL/dC`:
  * `dL/dA = dL/dC @ B^T`, `dL/dB = A^T @ dL/dC` -- the same two-matmul
- * shape as BasicML's `Linear.backward`.
+ * shape as BasicML's `Linear.backward`. The transposes are strided views
+ * of the saved operands passed straight to oneDNN, not copies.
  *
  * @throws std::runtime_error if shapes are not 2D or the inner dimensions disagree.
  */
 Tensor matmul(const Tensor& a, const Tensor& b);
 
 /**
+ * Affine map `y = x @ weight + bias`, with `x` shaped `(N, in)`, `weight`
+ * `(in, out)` and `bias` `(out)`, broadcast over rows.
+ *
+ * Equivalent to `matmul(x, weight) + bias`, but the bias add is fused into
+ * the same oneDNN `matmul` call and the graph records one node instead of
+ * two. Backward: `dL/dx = dL/dy @ weight^T`, `dL/dweight = x^T @ dL/dy`,
+ * `dL/dbias = sum over rows of dL/dy`.
+ *
+ * @throws std::runtime_error if `x`/`weight` are not 2D with matching inner
+ * dimensions, or `bias` is not 1D with `weight.shape()[1]` entries.
+ */
+Tensor linear(const Tensor& x, const Tensor& weight, const Tensor& bias);
+
+/**
  * Rectified linear unit, elementwise: `relu(x) = max(0, x)`.
- * Backward: `dL/dx = dL/dy` where `x > 0`, else `0`.
+ * Backward: `dL/dx = dL/dy` where `y > 0`, else `0` (read from the saved
+ * output `y`, which is equivalent to testing `x > 0`).
+ *
+ * Runs through oneDNN's `eltwise` primitive, which keeps `x`'s layout: a
+ * oneDNN-blocked input (e.g. from `batch_norm2d`) yields a blocked output
+ * with no conversion.
  */
 Tensor relu(const Tensor& x);
 
@@ -184,6 +204,23 @@ Tensor softmax(const Tensor& x);
 Tensor cross_entropy_loss(const Tensor& pred, const Tensor& target);
 
 /**
+ * Softmax followed by cross-entropy, fused into one op over raw `logits`
+ * (1D, or 2D `(N, D)` with one distribution per row) and a `target`
+ * distribution of the same shape (typically one-hot):
+ * `loss = -mean_i(sum_j(target_ij * log_softmax(logits_i)_j))`, with
+ * `log_softmax(z)_j = z_j - (max(z) + log(sum_k(exp(z_k - max(z)))))`.
+ *
+ * Numerically stable, with no clipping and no division by a probability,
+ * unlike `softmax` + `cross_entropy_loss`. Backward, with `p = softmax(logits_i)`:
+ * `dL/d(logits_ij) = (p_j * sum_k(target_ik) - target_ij) / N`, which is the
+ * familiar `(p - target) / N` for normalized targets;
+ * `dL/d(target_ij) = -log_softmax(logits_i)_j / N`.
+ *
+ * @throws std::runtime_error if the shapes differ or are neither 1D nor 2D.
+ */
+Tensor softmax_cross_entropy(const Tensor& logits, const Tensor& target);
+
+/**
  * 2D convolution: `x` is `(N, in_channels, H, W)`, `weight` is
  * `(out_channels, in_channels, kh, kw)`, `bias` is `(out_channels)`,
  * output is `(N, out_channels, Hout, Wout)` with
@@ -194,6 +231,10 @@ Tensor cross_entropy_loss(const Tensor& pred, const Tensor& target);
  * backward through `dnnl::convolution_backward_data` (w.r.t. `x`, skipped
  * when `x` needs no gradient, such as a first layer's data batch) and
  * `convolution_backward_weights` (w.r.t. `weight` and `bias`).
+ *
+ * The output (and `x`'s gradient) stays in the layout oneDNN picked for the
+ * kernel, typically blocked `nChw16c`; `data()` converts it to NCHW on
+ * first read. The weight and bias gradients are always plain.
  *
  * @param stride Stride applied to both spatial dimensions.
  * @param padding Zero-padding applied to both spatial dimensions, both sides.
@@ -209,6 +250,7 @@ Tensor conv2d(const Tensor& x, const Tensor& weight, const Tensor& bias, size_t 
  * Forward/backward run through oneDNN's `dnnl::pooling_forward` /
  * `pooling_backward` (`pooling_max` algorithm); backward routes the
  * upstream gradient to each window's argmax via oneDNN's workspace.
+ * A blocked input is pooled in its blocked layout, and the output stays blocked.
  *
  * @throws std::runtime_error if `x` is not 4D or `kernel_size` exceeds `H` or `W`.
  */
@@ -246,6 +288,10 @@ Tensor flatten(const Tensor& x);
  * as `mean`/`var` directly and left untouched. Backward differs between
  * the two modes accordingly: in training mode it accounts for `mean`/`var`
  * depending on `x`; in inference mode it treats them as constants.
+ * `var` is the biased batch variance (divided by `N * H * W`).
+ *
+ * Forward and backward run through oneDNN's `batch_normalization`
+ * primitives, keeping `x`'s (possibly blocked) layout.
  *
  * @throws std::runtime_error if `x` is not 4D, `gamma`/`beta` are not 1D
  * with `C` entries, or `running_mean`/`running_var` do not have `C` entries.
@@ -256,7 +302,8 @@ Tensor batch_norm2d(const Tensor& x, const Tensor& gamma, const Tensor& beta, st
 /**
  * 1D batch normalization over a `(N, C)` tensor, normalizing each feature
  * across the batch axis `N`: `y = gamma * (x - mean) / sqrt(var + eps) +
- * beta`. Same semantics as `batch_norm2d` with `H = W = 1`.
+ * beta`. Same semantics as `batch_norm2d` with `H = W = 1` (and computed by
+ * the same oneDNN primitive over an `(N, C, 1, 1)` view).
  *
  * @throws std::runtime_error if `x` is not 2D, `gamma`/`beta` are not 1D
  * with `C` entries, or `running_mean`/`running_var` do not have `C` entries.
@@ -268,7 +315,8 @@ Tensor batch_norm1d(const Tensor& x, const Tensor& gamma, const Tensor& beta, st
  * Global average pooling over a `(N, C, H, W)` tensor's spatial dimensions:
  * output is `(N, C, 1, 1)`, `out[n, c] = mean_{h, w}(x[n, c, h, w])`.
  * Backward broadcasts the upstream gradient back evenly: `dL/dx[n, c, h, w]
- * = dL/d(out[n, c]) / (H * W)`.
+ * = dL/d(out[n, c]) / (H * W)`. Computed by oneDNN average pooling with an
+ * `H x W` kernel, so a blocked input stays blocked.
  *
  * @throws std::runtime_error if `x` is not 4D.
  */
@@ -278,7 +326,8 @@ Tensor global_avg_pool2d(const Tensor& x);
  * Global max pooling over a `(N, C, H, W)` tensor's spatial dimensions:
  * output is `(N, C, 1, 1)`, `out[n, c] = max_{h, w}(x[n, c, h, w])`.
  * Backward routes the whole upstream gradient to each `(n, c)` slice's
- * argmax location, zero elsewhere.
+ * argmax location, zero elsewhere. Computed by oneDNN max pooling with an
+ * `H x W` kernel.
  *
  * @throws std::runtime_error if `x` is not 4D.
  */

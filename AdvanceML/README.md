@@ -20,7 +20,7 @@ Catch2 (test framework) is fetched automatically via CMake `FetchContent` — no
 
 ## Examples
 
-`train_cnn_mnist` — a `(Conv2D -> BatchNorm2D -> ReLU -> MaxPool2D) x2 -> Conv2D -> BatchNorm2D -> ReLU -> AvgPool2D -> Flatten -> Linear -> Softmax` CNN trained on real MNIST with `AdamW`, the AdvanceML counterpart to [`BasicML/examples/train_cnn_mnist.py`](../BasicML/examples/train_cnn_mnist.py) (same architecture, same disjoint train/test split). Run the one-time IDX export first (reuses BasicML's existing `scikit-learn` dependency to fetch/cache real MNIST, then writes it out as IDX files with no Python dependency at runtime for the C++ side):
+`train_cnn_mnist` — a `(Conv2D -> BatchNorm2D -> ReLU -> MaxPool2D) x2 -> Conv2D -> BatchNorm2D -> ReLU -> GlobalAvgPool2D -> Flatten -> Linear` CNN trained on real MNIST with `AdamW` and the fused `SoftmaxCrossEntropyLoss`, the AdvanceML counterpart to [`BasicML/examples/train_cnn_mnist.py`](../BasicML/examples/train_cnn_mnist.py) (same architecture, same disjoint train/test split). Run the one-time IDX export first (reuses BasicML's existing `scikit-learn` dependency to fetch/cache real MNIST, then writes it out as IDX files with no Python dependency at runtime for the C++ side):
 
 ```bash
 python AdvanceML/scripts/prepare_mnist_idx.py     # writes AdvanceML/data/mnist/*, gitignored
@@ -28,9 +28,13 @@ cmake --build build --target train_cnn_mnist
 ./build/train_cnn_mnist AdvanceML/data/mnist
 ```
 
-### Known limitation: per-call oneDNN primitive creation
+### Performance notes
 
-`conv2d`/`max_pool2d`/`avg_pool2d`/`batch_norm2d` each build a fresh oneDNN primitive descriptor on every forward/backward call rather than caching it across calls with the same shape — the straightforward-but-unoptimized approach taken while landing TODO-0038. At the small batch sizes (128) and channel counts this example uses, that per-call overhead currently dominates: a rough timed comparison against `BasicML/examples/train_cnn_mnist.py` at a reduced scale (2000 train / 400 test images, 3 epochs, otherwise identical config) measured AdvanceML at ~117s wall-clock vs. BasicML's ~32s — AdvanceML currently slower despite burning far more CPU-seconds across threads, the opposite of the CPU-throughput goal stated in `ai-audit/instructions/TODO-0030.md`. Primitive-descriptor caching (keyed by shape) is the natural follow-up to actually realize that goal and is not yet filed as its own TODO.
+On this machine (i7-1165G7, 4 cores / 8 threads), the full 10-epoch run takes about 18 s. Before TODO-0045 it took 75 s, and before the TODO-0043/0044 work several minutes. See `ai-audit/instructions/TODO-0045.md` for the profiles.
+
+- oneDNN primitives are cached per op, shape and layout, so each is built once.
+- `conv2d`, `batch_norm2d`, `relu`, `max_pool2d`/`avg_pool2d` and the global pools run on oneDNN and keep oneDNN's blocked layout (for example `nChw16c`) between them. A conv → BN → ReLU → pool chain never converts back to NCHW. The conversion happens only when something reads `tensor.data()`, or when an op without oneDNN support consumes the tensor.
+- Tensor buffers (`FloatBuffer`) are 64-byte aligned and are not zero-filled when an op is about to overwrite them.
 
 ## Autograd
 
@@ -39,8 +43,11 @@ cmake --build build --target train_cnn_mnist
 - `loss.backward()` frees each node's saved tensors as it goes. Pass `loss.backward(/*retain_graph=*/true)` to backpropagate through the same graph again.
 - Gradients are only computed for inputs that need them (for example, a first conv layer never computes a gradient for its data batch).
 - `flatten`, `identity` and inference-mode `dropout` return views that share their input's storage.
+- `tensor.data()` / `mutable_data()` return `const FloatBuffer&` / `FloatBuffer&` (a `std::vector<float>` with an aligned allocator). `FloatBuffer(n)` leaves its elements uninitialized, so use `FloatBuffer(n, 0.0f)` when you need zeros. `Tensor` still accepts a plain `std::vector<float>`, which it copies.
+- A oneDNN-backed op may return a tensor in a blocked layout (`tensor.has_plain_layout() == false`). The first `data()` read converts it to NCHW in place. That read is not a write, so the version counter doesn't change.
+- `Tensor` and the primitive caches are not thread-safe.
 - Double backward (gradients of gradients) is not supported.
 
 ## Status
 
-Component library at rough parity with BasicML: autograd engine, `Module`/`Sequential`/`Linear`/`Conv2D`/`MaxPool2D`/`AvgPool2D`/`Flatten`/`BatchNorm2D`, activations (ReLU/Sigmoid/LeakyReLU/GELU/Softmax), losses (`MSELoss`/`CrossEntropyLoss`), optimizers (`SGD`/`Momentum`/`Adam`/`AdamW`), an MNIST IDX loader, an `Accuracy` metric, and the `train_cnn_mnist` example above (`ai-audit` TODO-0034 umbrella). See the known-limitation note above for the current CPU-throughput gap.
+Component library at rough parity with BasicML: autograd engine, `Module`/`Sequential`/`Linear`/`Conv2D`/`MaxPool2D`/`AvgPool2D`/`Flatten`/`BatchNorm2D`, activations (ReLU/Sigmoid/LeakyReLU/GELU/Softmax), losses (`MSELoss`/`CrossEntropyLoss`/`SoftmaxCrossEntropyLoss`), optimizers (`SGD`/`Momentum`/`Adam`/`AdamW`), an MNIST IDX loader, an `Accuracy` metric, and the `train_cnn_mnist` example above (`ai-audit` TODO-0034 umbrella).

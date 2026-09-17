@@ -21,7 +21,7 @@ void Adadelta::step() {
             continue;
         }
         Tensor grad = param.grad();
-        std::vector<float>& values = param.mutable_data();
+        FloatBuffer& values = param.mutable_data();
         std::vector<float>& mean_sq_grad = mean_sq_grad_[i];
         std::vector<float>& mean_sq_step = mean_sq_step_[i];
         for (size_t j = 0; j < values.size(); ++j) {

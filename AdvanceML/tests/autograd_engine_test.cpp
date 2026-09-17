@@ -76,15 +76,15 @@ TEST_CASE("inputs that do not require a gradient get none", "[autograd][skip_gra
 }
 
 TEST_CASE("conv2d parameter gradients are unchanged when the input needs no gradient", "[autograd][skip_grad]") {
-    const std::vector<float> x_values = Tensor::random_uniform({2, 3, 5, 5}, -1.0f, 1.0f, /*seed=*/30).data();
+    const FloatBuffer x_values = Tensor::random_uniform({2, 3, 5, 5}, -1.0f, 1.0f, /*seed=*/30).data();
     Tensor w = Tensor::random_uniform({4, 3, 3, 3}, -1.0f, 1.0f, /*seed=*/31, /*requires_grad=*/true);
     Tensor b = Tensor::random_uniform({4}, -1.0f, 1.0f, /*seed=*/32, /*requires_grad=*/true);
 
     Tensor x_with_grad(x_values, {2, 3, 5, 5}, /*requires_grad=*/true);
     Tensor y1 = conv2d(x_with_grad, w, b, /*stride=*/1, /*padding=*/1);
     mse_loss(y1, Tensor::zeros(y1.shape())).backward();
-    const std::vector<float> w_grad_full = w.grad().data();
-    const std::vector<float> b_grad_full = b.grad().data();
+    const FloatBuffer w_grad_full = w.grad().data();
+    const FloatBuffer b_grad_full = b.grad().data();
     REQUIRE(x_with_grad.has_grad());
 
     w.zero_grad();
@@ -100,7 +100,7 @@ TEST_CASE("conv2d parameter gradients are unchanged when the input needs no grad
 TEST_CASE("modifying a tensor saved for backward in place makes backward throw", "[autograd][version]") {
     SECTION("a saved input") {
         Tensor x = Tensor::random_uniform({5}, -1.0f, 1.0f, /*seed=*/40, /*requires_grad=*/true);
-        Tensor loss = mse_loss(relu(x), Tensor::zeros({5}));
+        Tensor loss = mse_loss(leaky_relu(x), Tensor::zeros({5}));
         const uint64_t before = x.version();
         x.mutable_data()[0] = 3.0f;
         REQUIRE(x.version() == before + 1);
@@ -113,9 +113,18 @@ TEST_CASE("modifying a tensor saved for backward in place makes backward throw",
         y.mutable_data()[0] = 0.5f;
         REQUIRE_THROWS_AS(loss.backward(), std::runtime_error);
     }
+    SECTION("relu saves its output, not its input") {
+        Tensor x = Tensor::random_uniform({5}, -1.0f, 1.0f, /*seed=*/44, /*requires_grad=*/true);
+        Tensor y = relu(x);
+        Tensor loss = mse_loss(y + Tensor::zeros({5}), Tensor::zeros({5}));
+        x.mutable_data()[0] = 3.0f;
+        REQUIRE_NOTHROW(loss.backward(/*retain_graph=*/true));
+        y.mutable_data()[0] = 0.5f;
+        REQUIRE_THROWS_AS(loss.backward(), std::runtime_error);
+    }
     SECTION("a write through a view sharing the saved storage") {
         Tensor x = Tensor::random_uniform({2, 3}, -1.0f, 1.0f, /*seed=*/42, /*requires_grad=*/true);
-        Tensor loss = mse_loss(relu(x), Tensor::zeros({2, 3}));
+        Tensor loss = mse_loss(leaky_relu(x), Tensor::zeros({2, 3}));
         Tensor view = flatten(x);
         view.mutable_data()[0] = 3.0f;
         REQUIRE_THROWS_AS(loss.backward(), std::runtime_error);
@@ -174,7 +183,7 @@ TEST_CASE("retain_graph controls whether a graph can be backpropagated twice", "
 
     Tensor retained = mse_loss(relu(matmul(x, w)), target);
     retained.backward(/*retain_graph=*/true);
-    const std::vector<float> once = w.grad().data();
+    const FloatBuffer once = w.grad().data();
     retained.backward();
     for (size_t i = 0; i < once.size(); ++i) {
         REQUIRE(w.grad().data()[i] == Catch::Approx(2.0f * once[i]));
@@ -199,14 +208,14 @@ TEST_CASE("gradients from several consumers accumulate without aliasing", "[auto
         Tensor b({3.0f, 4.0f}, {2}, /*requires_grad=*/true);
         Tensor loss = mse_loss(a + b, Tensor::zeros({2}));
         loss.backward();
-        const std::vector<float> b_grad = b.grad().data();
+        const FloatBuffer b_grad = b.grad().data();
         a.grad().mutable_data()[0] = 100.0f;
         REQUIRE(b.grad().data() == b_grad);
     }
     SECTION("a second backward accumulates into an existing leaf gradient") {
         Tensor w({0.5f, -1.5f}, {2}, /*requires_grad=*/true);
         mse_loss(w, Tensor::zeros({2})).backward();
-        const std::vector<float> once = w.grad().data();
+        const FloatBuffer once = w.grad().data();
         Tensor snapshot = w.grad();
         mse_loss(w, Tensor::zeros({2})).backward();
         for (size_t i = 0; i < 2; ++i) {

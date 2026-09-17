@@ -35,15 +35,25 @@ void AdamW::step() {
             continue;
         }
         Tensor grad = param.grad();
-        std::vector<float>& values = param.mutable_data();
-        std::vector<float>& m = first_moment_[i];
-        std::vector<float>& v = second_moment_[i];
-        for (size_t j = 0; j < values.size(); ++j) {
-            m[j] = beta1_ * m[j] + (1.0f - beta1_) * grad.data()[j];
-            v[j] = beta2_ * v[j] + (1.0f - beta2_) * grad.data()[j] * grad.data()[j];
+        // Raw pointers and loop-local constants, so the loop has no calls or aliasing through members
+        // and vectorizes (sqrt included, given -fno-math-errno).
+        const float* const g = grad.data().data();
+        FloatBuffer& param_values = param.mutable_data();
+        float* const values = param_values.data();
+        float* const m = first_moment_[i].data();
+        float* const v = second_moment_[i].data();
+        const size_t n = param_values.size();
+        const float beta1 = beta1_;
+        const float beta2 = beta2_;
+        const float learning_rate = learning_rate_;
+        const float eps = eps_;
+        const float weight_decay = weight_decay_;
+        for (size_t j = 0; j < n; ++j) {
+            m[j] = beta1 * m[j] + (1.0f - beta1) * g[j];
+            v[j] = beta2 * v[j] + (1.0f - beta2) * g[j] * g[j];
             const float m_hat = m[j] / bias_correction1;
             const float v_hat = v[j] / bias_correction2;
-            values[j] -= learning_rate_ * (m_hat / (std::sqrt(v_hat) + eps_) + weight_decay_ * values[j]);
+            values[j] -= learning_rate * (m_hat / (std::sqrt(v_hat) + eps) + weight_decay * values[j]);
         }
     }
 }
