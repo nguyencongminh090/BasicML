@@ -54,3 +54,6 @@ if(ADVANCEML_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()
+
+add_executable(train_cnn_mnist examples/train_cnn_mnist.cpp)
+target_link_libraries(train_cnn_mnist PRIVATE advanceml)

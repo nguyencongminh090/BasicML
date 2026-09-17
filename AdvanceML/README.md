@@ -18,6 +18,20 @@ ctest --test-dir build
 
 Catch2 (test framework) is fetched automatically via CMake `FetchContent` — nothing to install manually for tests.
 
+## Examples
+
+`train_cnn_mnist` — a `(Conv2D -> BatchNorm2D -> ReLU -> MaxPool2D) x2 -> Conv2D -> BatchNorm2D -> ReLU -> AvgPool2D -> Flatten -> Linear -> Softmax` CNN trained on real MNIST with `AdamW`, the AdvanceML counterpart to [`BasicML/examples/train_cnn_mnist.py`](../BasicML/examples/train_cnn_mnist.py) (same architecture, same disjoint train/test split). Run the one-time IDX export first (reuses BasicML's existing `scikit-learn` dependency to fetch/cache real MNIST, then writes it out as IDX files with no Python dependency at runtime for the C++ side):
+
+```bash
+python AdvanceML/scripts/prepare_mnist_idx.py     # writes AdvanceML/data/mnist/*, gitignored
+cmake --build build --target train_cnn_mnist
+./build/train_cnn_mnist AdvanceML/data/mnist
+```
+
+### Known limitation: per-call oneDNN primitive creation
+
+`conv2d`/`max_pool2d`/`avg_pool2d`/`batch_norm2d` each build a fresh oneDNN primitive descriptor on every forward/backward call rather than caching it across calls with the same shape — the straightforward-but-unoptimized approach taken while landing TODO-0038. At the small batch sizes (128) and channel counts this example uses, that per-call overhead currently dominates: a rough timed comparison against `BasicML/examples/train_cnn_mnist.py` at a reduced scale (2000 train / 400 test images, 3 epochs, otherwise identical config) measured AdvanceML at ~117s wall-clock vs. BasicML's ~32s — AdvanceML currently slower despite burning far more CPU-seconds across threads, the opposite of the CPU-throughput goal stated in `ai-audit/instructions/TODO-0030.md`. Primitive-descriptor caching (keyed by shape) is the natural follow-up to actually realize that goal and is not yet filed as its own TODO.
+
 ## Status
 
-Project scaffold only (build system, directory layout, one placeholder smoke test). The autograd engine itself has not been implemented yet — see the ai-audit backlog for follow-up TODOs.
+Component library at rough parity with BasicML: autograd engine, `Module`/`Sequential`/`Linear`/`Conv2D`/`MaxPool2D`/`AvgPool2D`/`Flatten`/`BatchNorm2D`, activations (ReLU/Sigmoid/LeakyReLU/GELU/Softmax), losses (`MSELoss`/`CrossEntropyLoss`), optimizers (`SGD`/`Momentum`/`Adam`/`AdamW`), an MNIST IDX loader, an `Accuracy` metric, and the `train_cnn_mnist` example above (`ai-audit` TODO-0034 umbrella). See the known-limitation note above for the current CPU-throughput gap.
