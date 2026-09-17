@@ -25,6 +25,11 @@ add_library(advanceml
     src/nn/softmax.cpp
     src/nn/sequential.cpp
     src/nn/loss.cpp
+    src/nn/conv2d.cpp
+    src/nn/max_pool2d.cpp
+    src/nn/avg_pool2d.cpp
+    src/nn/flatten.cpp
+    src/nn/batch_norm2d.cpp
     src/optim/optimizer.cpp
     src/optim/sgd.cpp
     src/optim/momentum.cpp

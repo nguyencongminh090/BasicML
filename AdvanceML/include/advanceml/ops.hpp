@@ -76,4 +76,72 @@ Tensor softmax(const Tensor& x);
  */
 Tensor cross_entropy_loss(const Tensor& pred, const Tensor& target);
 
+/**
+ * 2D convolution: `x` is `(N, in_channels, H, W)`, `weight` is
+ * `(out_channels, in_channels, kh, kw)`, `bias` is `(out_channels)`,
+ * output is `(N, out_channels, Hout, Wout)` with
+ * `Hout = (H + 2*padding - kh) / stride + 1` (`Wout` analogous).
+ *
+ * Forward runs through oneDNN's `dnnl::convolution_forward` primitive;
+ * backward (w.r.t. `x`, `weight`, and `bias`) through
+ * `dnnl::convolution_backward_data` and `convolution_backward_weights`.
+ *
+ * @param stride Stride applied to both spatial dimensions.
+ * @param padding Zero-padding applied to both spatial dimensions, both sides.
+ * @throws std::runtime_error if `x`/`weight` are not 4D, `bias` is not 1D
+ * with `out_channels` entries, `x`'s channel count doesn't match
+ * `weight`'s `in_channels`, or the padded input is smaller than the kernel.
+ */
+Tensor conv2d(const Tensor& x, const Tensor& weight, const Tensor& bias, size_t stride, size_t padding);
+
+/**
+ * 2D max pooling over a `(N, C, H, W)` tensor: each output element is the
+ * max over its `kernel_size x kernel_size` window, strided by `stride`.
+ * Forward/backward run through oneDNN's `dnnl::pooling_forward` /
+ * `pooling_backward` (`pooling_max` algorithm); backward routes the
+ * upstream gradient to each window's argmax via oneDNN's workspace.
+ *
+ * @throws std::runtime_error if `x` is not 4D or `kernel_size` exceeds `H` or `W`.
+ */
+Tensor max_pool2d(const Tensor& x, size_t kernel_size, size_t stride);
+
+/**
+ * 2D average pooling over a `(N, C, H, W)` tensor: each output element is
+ * the mean over its `kernel_size x kernel_size` window, strided by
+ * `stride`. Forward/backward run through oneDNN's `dnnl::pooling_forward`
+ * / `pooling_backward` (`pooling_avg_exclude_padding` algorithm).
+ *
+ * @throws std::runtime_error if `x` is not 4D or `kernel_size` exceeds `H` or `W`.
+ */
+Tensor avg_pool2d(const Tensor& x, size_t kernel_size, size_t stride);
+
+/**
+ * Flattens every dimension but the first (batch) one: `(N, ...)` becomes
+ * `(N, prod(...))`. A pure reshape: the underlying data is copied
+ * unchanged, and backward reshapes the upstream gradient back to `x`'s
+ * original shape.
+ *
+ * @throws std::runtime_error if `x` has no dimensions.
+ */
+Tensor flatten(const Tensor& x);
+
+/**
+ * 2D batch normalization over a `(N, C, H, W)` tensor, normalizing each
+ * channel across the `N`, `H`, `W` axes:
+ * `y = gamma * (x - mean) / sqrt(var + eps) + beta`.
+ *
+ * When `training` is true, `mean`/`var` are the current batch's
+ * per-channel statistics, and `running_mean`/`running_var` are updated in
+ * place: `running = (1 - momentum) * running + momentum * batch`. When
+ * `training` is false (inference), `running_mean`/`running_var` are used
+ * as `mean`/`var` directly and left untouched. Backward differs between
+ * the two modes accordingly: in training mode it accounts for `mean`/`var`
+ * depending on `x`; in inference mode it treats them as constants.
+ *
+ * @throws std::runtime_error if `x` is not 4D, `gamma`/`beta` are not 1D
+ * with `C` entries, or `running_mean`/`running_var` do not have `C` entries.
+ */
+Tensor batch_norm2d(const Tensor& x, const Tensor& gamma, const Tensor& beta, std::vector<float>& running_mean,
+                     std::vector<float>& running_var, bool training, float momentum = 0.1f, float eps = 1e-5f);
+
 }  // namespace advanceml
