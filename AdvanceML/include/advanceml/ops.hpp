@@ -31,6 +31,30 @@ Tensor relu(const Tensor& x);
 Tensor mse_loss(const Tensor& pred, const Tensor& target);
 
 /**
+ * Mean absolute error: `loss = mean(|pred - target|)`, reduced to a scalar.
+ * Backward: `dL/d(pred) = sign(pred - target) / N`, `dL/d(target) = -sign(pred - target) / N`,
+ * where `sign(0) = 0` (a subgradient choice at the non-differentiable point).
+ *
+ * @throws std::runtime_error if `pred.shape() != target.shape()`.
+ */
+Tensor abs_loss(const Tensor& pred, const Tensor& target);
+
+/**
+ * Binary cross-entropy loss for already-normalized probabilities, matching
+ * `basicml.nn.loss.BinaryCrossEntropy`'s contract: `pred` is expected to
+ * already be a probability per element (e.g. the output of `sigmoid`), and
+ * `target` a `{0, 1}`-valued tensor of the same shape.
+ * `loss = -mean_i(sum_j(target_ij * log(clip(pred_ij)) + (1 - target_ij) *
+ * log(1 - clip(pred_ij))))`, where the mean is over the batch dimension `i`
+ * and `clip` keeps `pred` in `[1e-15, 1 - 1e-15]` to avoid `log(0)`.
+ * Backward: `dL/d(pred_ij) = -(1/N) * (target_ij / clip(pred_ij) - (1 -
+ * target_ij) / (1 - clip(pred_ij)))`.
+ *
+ * @throws std::runtime_error if `pred.shape() != target.shape()`, or the shape is neither 1D nor 2D.
+ */
+Tensor binary_cross_entropy(const Tensor& pred, const Tensor& target);
+
+/**
  * Logistic sigmoid, elementwise: `sigmoid(x) = 1 / (1 + exp(-x))`.
  * Backward: `dL/dx = dL/dy * y * (1 - y)`, reusing the forward output `y`.
  */

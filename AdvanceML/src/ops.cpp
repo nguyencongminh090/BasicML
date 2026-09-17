@@ -249,6 +249,94 @@ Tensor mse_loss(const Tensor& pred, const Tensor& target) {
     return Tensor::from_impl(std::move(out_impl));
 }
 
+Tensor abs_loss(const Tensor& pred, const Tensor& target) {
+    if (pred.shape() != target.shape()) {
+        throw std::runtime_error("abs_loss: pred and target shapes must match");
+    }
+    const size_t n = pred.numel();
+
+    float sum_abs = 0.0f;
+    for (size_t i = 0; i < n; ++i) {
+        sum_abs += std::abs(pred.data()[i] - target.data()[i]);
+    }
+    const float loss_value = sum_abs / static_cast<float>(n);
+
+    auto out_impl = std::make_shared<TensorImpl>();
+    out_impl->data = {loss_value};
+    out_impl->shape = {1};
+    out_impl->requires_grad = pred.requires_grad() || target.requires_grad();
+
+    if (out_impl->requires_grad) {
+        auto node = std::make_shared<Node>();
+        node->inputs = {pred.impl(), target.impl()};
+        Tensor pred_copy = pred;
+        Tensor target_copy = target;
+        node->backward_fn = [pred_copy, target_copy, n](const Tensor& grad_output) -> std::vector<Tensor> {
+            const float upstream = grad_output.data()[0];
+            std::vector<float> grad_pred(n);
+            std::vector<float> grad_target(n);
+            for (size_t i = 0; i < n; ++i) {
+                const float diff = pred_copy.data()[i] - target_copy.data()[i];
+                const float sign = diff > 0.0f ? 1.0f : (diff < 0.0f ? -1.0f : 0.0f);
+                const float g = upstream * sign / static_cast<float>(n);
+                grad_pred[i] = g;
+                grad_target[i] = -g;
+            }
+            return {Tensor(std::move(grad_pred), pred_copy.shape()), Tensor(std::move(grad_target), target_copy.shape())};
+        };
+        out_impl->grad_fn = std::move(node);
+    }
+
+    return Tensor::from_impl(std::move(out_impl));
+}
+
+Tensor binary_cross_entropy(const Tensor& pred, const Tensor& target) {
+    if (pred.shape() != target.shape()) {
+        throw std::runtime_error("binary_cross_entropy: pred and target shapes must match");
+    }
+    if (pred.shape().size() != 1 && pred.shape().size() != 2) {
+        throw std::runtime_error("binary_cross_entropy: expected a 1D or 2D tensor");
+    }
+    constexpr float kEpsilon = 1e-15f;
+    const size_t n = pred.shape().size() == 2 ? pred.shape()[0] : 1;
+    const size_t numel = pred.numel();
+
+    float sum = 0.0f;
+    for (size_t i = 0; i < numel; ++i) {
+        const float clipped = std::clamp(pred.data()[i], kEpsilon, 1.0f - kEpsilon);
+        sum += target.data()[i] * std::log(clipped) + (1.0f - target.data()[i]) * std::log(1.0f - clipped);
+    }
+    const float loss_value = -sum / static_cast<float>(n);
+
+    auto out_impl = std::make_shared<TensorImpl>();
+    out_impl->data = {loss_value};
+    out_impl->shape = {1};
+    out_impl->requires_grad = pred.requires_grad() || target.requires_grad();
+
+    if (out_impl->requires_grad) {
+        auto node = std::make_shared<Node>();
+        node->inputs = {pred.impl(), target.impl()};
+        Tensor pred_copy = pred;
+        Tensor target_copy = target;
+        node->backward_fn = [pred_copy, target_copy, n, numel](const Tensor& grad_output) -> std::vector<Tensor> {
+            constexpr float kEpsilon = 1e-15f;
+            const float upstream = grad_output.data()[0];
+            std::vector<float> grad_pred(numel);
+            std::vector<float> grad_target(numel);
+            for (size_t i = 0; i < numel; ++i) {
+                const float clipped = std::clamp(pred_copy.data()[i], kEpsilon, 1.0f - kEpsilon);
+                const float t = target_copy.data()[i];
+                grad_pred[i] = -upstream * (t / clipped - (1.0f - t) / (1.0f - clipped)) / static_cast<float>(n);
+                grad_target[i] = -upstream * (std::log(clipped) - std::log(1.0f - clipped)) / static_cast<float>(n);
+            }
+            return {Tensor(std::move(grad_pred), pred_copy.shape()), Tensor(std::move(grad_target), target_copy.shape())};
+        };
+        out_impl->grad_fn = std::move(node);
+    }
+
+    return Tensor::from_impl(std::move(out_impl));
+}
+
 Tensor sigmoid(const Tensor& x) {
     std::vector<float> out_data(x.numel());
     for (size_t i = 0; i < out_data.size(); ++i) {

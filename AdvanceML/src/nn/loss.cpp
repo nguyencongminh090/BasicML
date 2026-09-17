@@ -14,4 +14,12 @@ Tensor CrossEntropyLoss::operator()(const Tensor& pred, const Tensor& target) {
     return cross_entropy_loss(pred, target);
 }
 
+Tensor AbsoluteLoss::operator()(const Tensor& pred, const Tensor& target) {
+    return abs_loss(pred, target);
+}
+
+Tensor BinaryCrossEntropy::operator()(const Tensor& pred, const Tensor& target) {
+    return binary_cross_entropy(pred, target);
+}
+
 }  // namespace advanceml
